@@ -20,21 +20,21 @@ bot.command('request', async (ctx) => {
 
   const amount = text[1];
   const description = text.slice(2).join(' ');
-  const staffName = ctx.from.first_name;
+  const staffName = ctx.from.first_name || 'Staff';
 
   try {
     await doc.loadInfo();
-    // MATCHING YOUR TAB NAME IN THE PHOTO
+    // This matches the tab name "Pending_Expenses" in your photo
     const sheet = doc.sheetsByTitle['Pending_Expenses']; 
     
-    // MATCHING YOUR HEADERS IN THE PHOTO
+    // These match the exact headers (A1 to F1) in your photo
     const row = await sheet.addRow({
-      Timestamp: new Date().toLocaleString(),
+      'Timestamp': new Date().toLocaleString(),
       'Staff Name': staffName,
-      Amount: amount,
-      Description: description,
-      Status: 'PENDING',
-      _StaffChatId: ctx.from.id
+      'Amount': amount,
+      'Description': description,
+      'Status': 'PENDING',
+      '_StaffChatId': ctx.from.id.toString()
     });
 
     await bot.telegram.sendMessage(MANAGER_ID, 
@@ -50,8 +50,8 @@ bot.command('request', async (ctx) => {
 
     ctx.reply('✅ Your request has been sent to the manager for approval.');
   } catch (e) {
-    ctx.reply('Error connecting to sheet. Check sharing permissions.');
-    console.log(e);
+    ctx.reply('Error connecting to sheet. Checking logs...');
+    console.error('ERROR:', e.message);
   }
 });
 
@@ -77,9 +77,9 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
       bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Your request for ${targetRow.Amount} was REJECTED.`);
     }
   } catch (e) {
-    console.log(e);
+    console.error('ACTION ERROR:', e.message);
   }
 });
 
 bot.launch();
-console.log('Bot is live!');
+console.log('IELTS Zone Bot is Active');
