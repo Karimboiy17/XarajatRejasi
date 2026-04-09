@@ -15,7 +15,6 @@ const serviceAccountAuth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
 
-// Foydalanuvchi qaysi bosqichdaligini eslab qolish uchun
 const userSessions = {};
 const categories = ['🏠 Ijara', '📢 Marketing', '💻 IT/Ofis', '☕️ Oshxona', '🎓 Oylik (Ustozlar)', '🛠 Ta’mirlash'];
 
@@ -32,27 +31,48 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text;
 
-  if (!userSessions[userId]) return ctx.reply('Iltimos, yangi so‘rov yuborish uchun /start bosing.');
+  if (!userSessions[userId]) return;
 
   const session = userSessions[userId];
 
-  // 1. KATEGORIYA TANLASH
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
       return ctx.reply(`${text} tanlandi.\n\n2-bosqich: Summani kiriting (faqat son):`, Markup.removeKeyboard());
     }
-    return ctx.reply('Iltimos, quyidagi tugmalardan birini tanlang.');
+    return ctx.reply('Iltimos, tugmalardan birini tanlang.');
   }
 
-  // 2. SUMMANI KIRITISH
   if (session.step === 'AMOUNT') {
     const amount = text.replace(/[^0-9]/g, ''); 
-    if (!amount || isNaN(amount)) {
-      return ctx.reply('Xato summa! Iltimos, faqat son kiriting (masalan: 50000).');
-    }
+    if (!amount) return ctx.reply('Faqat son kiriting (masalan: 50000).');
     session.amount = amount;
     session.step = 'DESCRIPTION';
-    return ctx.reply(`Summa: ${amount} so'm.\n\n3-bosqich: Xarajat nima uchun? (Tafsilotini yozing)`);
+    return ctx.reply(`Summa: ${amount} so'm.\n\n3-bosqich: Xarajat nima uchun? (Tafsilotni yozing)`);
   }
+
+  if (session.step === 'DESCRIPTION') {
+    session.description = text;
+    const { category, amount, description } = session;
+    ctx.reply('Yuborilmoqda... ⏳');
+    
+    try {
+      await doc.loadInfo();
+      const sheet = doc.sheetsByTitle['Pending_Expenses']; 
+      const row = await sheet.addRow({
+        'Timestamp': new Date().toLocaleString(),
+        'Staff Name': ctx.from.first_name || 'Xodim',
+        'Amount': amount,
+        'Description': `[${category}] ${description}`,
+        'Status': 'KUTILMOQDA',
+        '_StaffChatId': userId.toString()
+      });
+
+      await bot.telegram.sendMessage(MANAGER_ID, 
+        `💰 *Yangi xarajat*\n\n👤 *Xodim:* ${ctx.from.first_name}\n📂 *Kategoriya:* ${category}\n💵 *Summa:* ${amount} so'm\n📝 *Sabab:* ${description}`, 
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('✅ Tasdiqlash', `app_${row.rowNumber}`)],
+            [Markup.button.callback('❌
