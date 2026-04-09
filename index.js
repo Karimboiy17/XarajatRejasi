@@ -15,95 +15,44 @@ const serviceAccountAuth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
 
-// Temporary storage to remember which category the user picked
+// Foydalanuvchi qaysi bosqichdaligini eslab qolish uchun
 const userSessions = {};
-
-const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
+const categories = ['🏠 Ijara', '📢 Marketing', '💻 IT/Ofis', '☕️ Oshxona', '🎓 Oylik (Ustozlar)', '🛠 Ta’mirlash'];
 
 bot.command(['start', 'new'], (ctx) => {
-  ctx.reply('Welcome to IELTS Zone Expense Bot! 🎓\nChoose a category:', 
+  const userId = ctx.from.id;
+  userSessions[userId] = { step: 'CATEGORY' };
+  
+  ctx.reply('IELTS Zone Xarajatlar Botiga xush kelibsiz! 🎓\n\n1-bosqich: Yo‘nalishni tanlang:', 
     Markup.keyboard(categories, { columns: 2 }).oneTime().resize()
   );
 });
 
 bot.on('text', async (ctx) => {
-  const text = ctx.message.text;
   const userId = ctx.from.id;
+  const text = ctx.message.text;
 
-  // 1. Handle Category Selection
-  if (categories.includes(text)) {
-    userSessions[userId] = { category: text };
-    return ctx.reply(`Selected: ${text}\nNow send the **Amount** and **Reason**.\n\nExample: 150000 Printer ink`, Markup.removeKeyboard());
-  }
+  if (!userSessions[userId]) return ctx.reply('Iltimos, yangi so‘rov yuborish uchun /start bosing.');
 
-  // 2. Handle the Amount + Description
-  const parts = text.split(' ');
-  const amount = parts[0];
-  const description = parts.slice(1).join(' ');
+  const session = userSessions[userId];
 
-  if (!isNaN(amount) && amount > 0) {
-    const category = userSessions[userId]?.category || 'General';
-    await processRequest(ctx, amount, `${category}: ${description}`);
-    delete userSessions[userId]; // Clear session
-  } else {
-    ctx.reply('Please start with a number (Amount). Example: 50000 Lunch');
-  }
-});
-
-async function processRequest(ctx, amount, fullDescription) {
-  const staffName = ctx.from.first_name || 'Staff';
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses']; 
-    
-    const row = await sheet.addRow({
-      'Timestamp': new Date().toLocaleString('en-GB'),
-      'Staff Name': staffName,
-      'Amount': amount,
-      'Description': fullDescription,
-      'Status': 'PENDING',
-      '_StaffChatId': ctx.from.id.toString()
-    });
-
-    await bot.telegram.sendMessage(MANAGER_ID, 
-      `💰 *New Request*\n\nFrom: ${staffName}\nAmount: ${amount}\nDetails: ${fullDescription}`, 
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)],
-          [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]
-        ])
-      }
-    );
-
-    ctx.reply('✅ Sent to Manager!');
-  } catch (e) {
-    ctx.reply('Connection Error.');
-    console.error(e);
-  }
-}
-
-// Keep your Approve/Reject logic the same
-bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
-  const action = ctx.match[1];
-  const rowNum = ctx.match[2];
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-    const rows = await sheet.getRows();
-    const targetRow = rows.find(r => r.rowNumber == rowNum);
-    if (action === 'app') {
-      targetRow.Status = 'APPROVED';
-      await targetRow.save();
-      ctx.editMessageText(`✅ Approved: ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Approved: ${targetRow.Amount}`);
-    } else {
-      targetRow.Status = 'REJECTED';
-      await targetRow.save();
-      ctx.editMessageText(`❌ Rejected: ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Rejected: ${targetRow.Amount}`);
+  // 1. KATEGORIYA TANLASH
+  if (session.step === 'CATEGORY') {
+    if (categories.includes(text)) {
+      session.category = text;
+      session.step = 'AMOUNT';
+      return ctx.reply(`${text} tanlandi.\n\n2-bosqich: Summani kiriting (faqat son):`, Markup.removeKeyboard());
     }
-  } catch (e) { console.error(e); }
-});
+    return ctx.reply('Iltimos, quyidagi tugmalardan birini tanlang.');
+  }
 
-bot.launch();
+  // 2. SUMMANI KIRITISH
+  if (session.step === 'AMOUNT') {
+    const amount = text.replace(/[^0-9]/g, ''); 
+    if (!amount || isNaN(amount)) {
+      return ctx.reply('Xato summa! Iltimos, faqat son kiriting (masalan: 50000).');
+    }
+    session.amount = amount;
+    session.step = 'DESCRIPTION';
+    return ctx.reply(`Summa: ${amount} so'm.\n\n3-bosqich: Xarajat nima uchun? (Tafsilotini yozing)`);
+  }
