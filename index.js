@@ -129,3 +129,43 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
 
 bot.launch();
 console.log('IELTS Zone Lean Bot Active');
+// Add this command inside your code (before bot.launch)
+
+bot.command('report', async (ctx) => {
+  // Only allows the manager to see the report
+  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.reply('Unauthorized.');
+
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+
+    // Filter only Approved rows
+    const approvedRows = rows.filter(r => r.get('Status') === 'APPROVED');
+    
+    // Calculate total
+    const totalSpent = approvedRows.reduce((sum, r) => sum + Number(r.get('Amount') || 0), 0);
+
+    // Group by category (pulling from the [Category] part of the description)
+    const categoryTotals = {};
+    approvedRows.forEach(r => {
+      const desc = r.get('Description') || '';
+      const category = desc.split(']')[0].replace('[', '') || 'Other';
+      categoryTotals[category] = (categoryTotals[category] || 0) + Number(r.get('Amount') || 0);
+    });
+
+    let reportMsg = `📊 *IELTS Zone Spending Report*\n\n`;
+    reportMsg += `✅ Total Approved: *${totalSpent.toLocaleString()} UZS*\n\n`;
+    reportMsg += `*Breakdown by Category:*\n`;
+    
+    for (const [cat, amt] of Object.entries(categoryTotals)) {
+      reportMsg += `• ${cat}: ${amt.toLocaleString()} UZS\n`;
+    }
+
+    ctx.reply(reportMsg, { parse_mode: 'Markdown' });
+
+  } catch (e) {
+    console.error(e);
+    ctx.reply('Error generating report.');
+  }
+});
