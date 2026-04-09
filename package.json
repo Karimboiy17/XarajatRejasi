@@ -2,6 +2,9 @@
   "name": "ielts-zone-bot",
   "version": "1.0.0",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "telegraf": "^4.12.0",
     "google-spreadsheet": "^4.1.1",
