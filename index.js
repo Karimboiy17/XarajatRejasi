@@ -2,7 +2,7 @@ const { Telegraf, Markup } = require('telegraf');
 const { JWT } = require('google-auth-library');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 
-// 1. Configuration (Railway will fill these)
+// 1. Configuration (Railway fills these)
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
@@ -26,16 +26,18 @@ bot.command('request', async (ctx) => {
 
   try {
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    // MATCHING YOUR NEW SHEET NAME
+    const sheet = doc.sheetsByTitle['Expense Register']; 
     
-    // Add to "Waiting Table"
+    // Adding row using the column headers from your Dashboard Script
     const row = await sheet.addRow({
-      Timestamp: new Date().toLocaleString(),
-      'Staff Name': staffName,
-      Amount: amount,
-      Description: description,
-      Status: 'PENDING',
-      _StaffChatId: ctx.from.id
+      'Date': new Date().toLocaleDateString('en-GB'),
+      'Branch': 'Central', // Defaulting to Central
+      'Expense Category': 'General',
+      'Amount (UZS)': amount,
+      'Requested By': staffName,
+      'Status': 'Pending',
+      'Notes': description
     });
 
     // Notify Manager (You)
@@ -52,7 +54,7 @@ bot.command('request', async (ctx) => {
 
     ctx.reply('✅ Your request has been sent to the manager for approval.');
   } catch (e) {
-    ctx.reply('Error connecting to sheet.');
+    ctx.reply('Error connecting to sheet. Make sure the bot email is shared as Editor.');
     console.log(e);
   }
 });
@@ -62,24 +64,32 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const rowNum = ctx.match[2];
 
-  await doc.loadInfo();
-  const pendingSheet = doc.sheetsByTitle['Pending_Expenses'];
-  const rows = await pendingSheet.getRows();
-  const targetRow = rows.find(r => r.rowNumber == rowNum);
-
-  if (action === 'app') {
-    targetRow.Status = 'APPROVED';
-    await targetRow.save();
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Expense Register'];
+    const rows = await sheet.getRows();
     
-    // Logic to copy to main Register could go here
-    ctx.editMessageText(`✅ You APPROVED the expense of ${targetRow.Amount}`);
-    bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Your request for ${targetRow.Amount} was APPROVED.`);
-  } else {
-    targetRow.Status = 'REJECTED';
-    await targetRow.save();
-    ctx.editMessageText(`❌ You REJECTED the expense of ${targetRow.Amount}`);
-    bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Your request for ${targetRow.Amount} was REJECTED.`);
+    // Find row (accounting for header offset)
+    const targetRow = rows.find(r => r.rowNumber == rowNum);
+
+    if (!targetRow) return ctx.reply('Could not find that row.');
+
+    if (action === 'app') {
+      targetRow.Status = 'Approved';
+      targetRow['Approved By'] = 'Karim X.'; // Your name
+      await targetRow.save();
+      
+      ctx.editMessageText(`✅ You APPROVED the expense of ${targetRow['Amount (UZS)']}`);
+    } else {
+      targetRow.Status = 'Rejected';
+      await targetRow.save();
+      ctx.editMessageText(`❌ You REJECTED the expense of ${targetRow['Amount (UZS)']}`);
+    }
+  } catch (e) {
+    console.log(e);
+    ctx.reply('Error processing approval.');
   }
 });
 
 bot.launch();
+console.log('Bot is running...');
