@@ -15,41 +15,42 @@ const serviceAccountAuth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
 
-// 1. Staff clicks /start or /new_request
-bot.command(['start', 'new_request'], (ctx) => {
-  ctx.reply('Welcome to IELTS Zone Expense Bot! 🎓\n\nPlease choose a category:', 
-    Markup.keyboard([
-      ['🏠 Rent', '📢 Marketing'],
-      ['💻 IT/Office', '☕️ Kitchen'],
-      ['🎓 Teacher Salary', '🛠 Maintenance']
-    ]).oneTime().resize()
+// Temporary storage to remember which category the user picked
+const userSessions = {};
+
+const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
+
+bot.command(['start', 'new'], (ctx) => {
+  ctx.reply('Welcome to IELTS Zone Expense Bot! 🎓\nChoose a category:', 
+    Markup.keyboard(categories, { columns: 2 }).oneTime().resize()
   );
 });
 
-// 2. Logic to handle the text from those buttons
 bot.on('text', async (ctx) => {
-  const message = ctx.message.text;
-  
-  // If they used the /request command manually
-  if (message.startsWith('/request')) {
-    const parts = message.split(' ');
-    if (parts.length < 3) return ctx.reply('Format: /request [Amount] [Description]');
-    return processRequest(ctx, parts[1], parts.slice(2).join(' '));
+  const text = ctx.message.text;
+  const userId = ctx.from.id;
+
+  // 1. Handle Category Selection
+  if (categories.includes(text)) {
+    userSessions[userId] = { category: text };
+    return ctx.reply(`Selected: ${text}\nNow send the **Amount** and **Reason**.\n\nExample: 150000 Printer ink`, Markup.removeKeyboard());
   }
 
-  // If they clicked a category button, ask for the amount
-  if (['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'].includes(message)) {
-    return ctx.reply(`You selected ${message}. Please send the amount and description in this format:\n\n[Amount] [Reason]\nExample: 50000 Lunch for staff`);
-  }
+  // 2. Handle the Amount + Description
+  const parts = text.split(' ');
+  const amount = parts[0];
+  const description = parts.slice(1).join(' ');
 
-  // Handle free-form text if it starts with a number (e.g. "50000 Rent")
-  const parts = message.split(' ');
-  if (!isNaN(parts[0])) {
-    return processRequest(ctx, parts[0], parts.slice(1).join(' '));
+  if (!isNaN(amount) && amount > 0) {
+    const category = userSessions[userId]?.category || 'General';
+    await processRequest(ctx, amount, `${category}: ${description}`);
+    delete userSessions[userId]; // Clear session
+  } else {
+    ctx.reply('Please start with a number (Amount). Example: 50000 Lunch');
   }
 });
 
-async function processRequest(ctx, amount, description) {
+async function processRequest(ctx, amount, fullDescription) {
   const staffName = ctx.from.first_name || 'Staff';
   try {
     await doc.loadInfo();
@@ -59,14 +60,13 @@ async function processRequest(ctx, amount, description) {
       'Timestamp': new Date().toLocaleString('en-GB'),
       'Staff Name': staffName,
       'Amount': amount,
-      'Description': description,
+      'Description': fullDescription,
       'Status': 'PENDING',
       '_StaffChatId': ctx.from.id.toString()
     });
 
-    // Notify Manager
     await bot.telegram.sendMessage(MANAGER_ID, 
-      `💰 *New Expense Request*\n\nFrom: ${staffName}\nAmount: ${amount}\nReason: ${description}`, 
+      `💰 *New Request*\n\nFrom: ${staffName}\nAmount: ${amount}\nDetails: ${fullDescription}`, 
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
@@ -76,14 +76,14 @@ async function processRequest(ctx, amount, description) {
       }
     );
 
-    ctx.reply('✅ Sent! Manager notified.');
+    ctx.reply('✅ Sent to Manager!');
   } catch (e) {
-    ctx.reply('Error. Try again later.');
+    ctx.reply('Connection Error.');
     console.error(e);
   }
 }
 
-// 3. Keep existing Approve/Reject logic
+// Keep your Approve/Reject logic the same
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const rowNum = ctx.match[2];
@@ -92,20 +92,18 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const targetRow = rows.find(r => r.rowNumber == rowNum);
-
     if (action === 'app') {
       targetRow.Status = 'APPROVED';
       await targetRow.save();
-      ctx.editMessageText(`✅ You APPROVED ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Your request for ${targetRow.Amount} was APPROVED.`);
+      ctx.editMessageText(`✅ Approved: ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Approved: ${targetRow.Amount}`);
     } else {
       targetRow.Status = 'REJECTED';
       await targetRow.save();
-      ctx.editMessageText(`❌ You REJECTED ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Your request for ${targetRow.Amount} was REJECTED.`);
+      ctx.editMessageText(`❌ Rejected: ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Rejected: ${targetRow.Amount}`);
     }
   } catch (e) { console.error(e); }
 });
 
 bot.launch();
-console.log('Bot with buttons is Active');
