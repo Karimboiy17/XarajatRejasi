@@ -2,7 +2,6 @@ const { Telegraf, Markup } = require('telegraf');
 const { JWT } = require('google-auth-library');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 
-// 1. Configuration (Railway fills these)
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
@@ -15,7 +14,6 @@ const serviceAccountAuth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
 
-// 2. Staff sends a request: /request [Amount] [Description]
 bot.command('request', async (ctx) => {
   const text = ctx.message.text.split(' ');
   if (text.length < 3) return ctx.reply('Format: /request [Amount] [Description]');
@@ -26,21 +24,19 @@ bot.command('request', async (ctx) => {
 
   try {
     await doc.loadInfo();
-    // MATCHING YOUR NEW SHEET NAME
-    const sheet = doc.sheetsByTitle['Expense Register']; 
+    // MATCHING YOUR TAB NAME IN THE PHOTO
+    const sheet = doc.sheetsByTitle['Pending_Expenses']; 
     
-    // Adding row using the column headers from your Dashboard Script
+    // MATCHING YOUR HEADERS IN THE PHOTO
     const row = await sheet.addRow({
-      'Date': new Date().toLocaleDateString('en-GB'),
-      'Branch': 'Central', // Defaulting to Central
-      'Expense Category': 'General',
-      'Amount (UZS)': amount,
-      'Requested By': staffName,
-      'Status': 'Pending',
-      'Notes': description
+      Timestamp: new Date().toLocaleString(),
+      'Staff Name': staffName,
+      Amount: amount,
+      Description: description,
+      Status: 'PENDING',
+      _StaffChatId: ctx.from.id
     });
 
-    // Notify Manager (You)
     await bot.telegram.sendMessage(MANAGER_ID, 
       `💰 *New Expense Request*\n\nFrom: ${staffName}\nAmount: ${amount}\nReason: ${description}`, 
       {
@@ -54,42 +50,36 @@ bot.command('request', async (ctx) => {
 
     ctx.reply('✅ Your request has been sent to the manager for approval.');
   } catch (e) {
-    ctx.reply('Error connecting to sheet. Make sure the bot email is shared as Editor.');
+    ctx.reply('Error connecting to sheet. Check sharing permissions.');
     console.log(e);
   }
 });
 
-// 3. Manager clicks Approve/Reject
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const action = ctx.match[1];
   const rowNum = ctx.match[2];
 
   try {
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Expense Register'];
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
-    
-    // Find row (accounting for header offset)
     const targetRow = rows.find(r => r.rowNumber == rowNum);
 
-    if (!targetRow) return ctx.reply('Could not find that row.');
-
     if (action === 'app') {
-      targetRow.Status = 'Approved';
-      targetRow['Approved By'] = 'Karim X.'; // Your name
+      targetRow.Status = 'APPROVED';
       await targetRow.save();
-      
-      ctx.editMessageText(`✅ You APPROVED the expense of ${targetRow['Amount (UZS)']}`);
+      ctx.editMessageText(`✅ You APPROVED ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Your request for ${targetRow.Amount} was APPROVED.`);
     } else {
-      targetRow.Status = 'Rejected';
+      targetRow.Status = 'REJECTED';
       await targetRow.save();
-      ctx.editMessageText(`❌ You REJECTED the expense of ${targetRow['Amount (UZS)']}`);
+      ctx.editMessageText(`❌ You REJECTED ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Your request for ${targetRow.Amount} was REJECTED.`);
     }
   } catch (e) {
     console.log(e);
-    ctx.reply('Error processing approval.');
   }
 });
 
 bot.launch();
-console.log('Bot is running...');
+console.log('Bot is live!');
