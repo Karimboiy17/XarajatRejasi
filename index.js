@@ -16,13 +16,13 @@ const serviceAccountAuth = new JWT({
 const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
 
 const userSessions = {};
-const categories = ['🏠 Ijara', '📢 Marketing', '💻 IT/Ofis', '☕️ Oshxona', '🎓 Oylik (Ustozlar)', '🛠 Ta’mirlash'];
+const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
 
 bot.command(['start', 'new'], (ctx) => {
   const userId = ctx.from.id;
   userSessions[userId] = { step: 'CATEGORY' };
   
-  ctx.reply('IELTS Zone Xarajatlar Botiga xush kelibsiz! 🎓\n\n1-bosqich: Yo‘nalishni tanlang:', 
+  ctx.reply('Welcome to IELTS Zone Expense Bot! 🎓\n\nStep 1: Choose a category:', 
     Markup.keyboard(categories, { columns: 2 }).oneTime().resize()
   );
 });
@@ -39,40 +39,76 @@ bot.on('text', async (ctx) => {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply(`${text} tanlandi.\n\n2-bosqich: Summani kiriting (faqat son):`, Markup.removeKeyboard());
+      return ctx.reply(`${text} selected.\n\nStep 2: Enter the amount (numbers only):`, Markup.removeKeyboard());
     }
-    return ctx.reply('Iltimos, tugmalardan birini tanlang.');
+    return ctx.reply('Please choose a category from the buttons.');
   }
 
   if (session.step === 'AMOUNT') {
     const amount = text.replace(/[^0-9]/g, ''); 
-    if (!amount) return ctx.reply('Faqat son kiriting (masalan: 50000).');
+    if (!amount) return ctx.reply('Please enter numbers only (e.g. 50000).');
     session.amount = amount;
     session.step = 'DESCRIPTION';
-    return ctx.reply(`Summa: ${amount} so'm.\n\n3-bosqich: Xarajat nima uchun? (Tafsilotni yozing)`);
+    return ctx.reply(`Amount: ${amount} UZS.\n\nStep 3: What is this for? (Description)`);
   }
 
   if (session.step === 'DESCRIPTION') {
     session.description = text;
     const { category, amount, description } = session;
-    ctx.reply('Yuborilmoqda... ⏳');
+    ctx.reply('Sending request... ⏳');
     
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses']; 
       const row = await sheet.addRow({
         'Timestamp': new Date().toLocaleString(),
-        'Staff Name': ctx.from.first_name || 'Xodim',
+        'Staff Name': ctx.from.first_name || 'Staff',
         'Amount': amount,
         'Description': `[${category}] ${description}`,
-        'Status': 'KUTILMOQDA',
+        'Status': 'PENDING',
         '_StaffChatId': userId.toString()
       });
 
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `💰 *Yangi xarajat*\n\n👤 *Xodim:* ${ctx.from.first_name}\n📂 *Kategoriya:* ${category}\n💵 *Summa:* ${amount} so'm\n📝 *Sabab:* ${description}`, 
+        `💰 *New Expense Request*\n\n👤 *From:* ${ctx.from.first_name}\n📂 *Category:* ${category}\n💵 *Amount:* ${amount} UZS\n📝 *Reason:* ${description}`, 
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Tasdiqlash', `app_${row.rowNumber}`)],
-            [Markup.button.callback('❌
+            [Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)],
+            [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]
+          ])
+        }
+      );
+
+      ctx.reply('✅ Request sent to manager!');
+      delete userSessions[userId]; 
+    } catch (e) {
+      ctx.reply('Error connecting to the system.');
+      console.error(e);
+    }
+  }
+});
+
+bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
+  const action = ctx.match[1];
+  const rowNum = ctx.match[2];
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+    const targetRow = rows.find(r => r.rowNumber == rowNum);
+    if (action === 'app') {
+      targetRow.Status = 'APPROVED';
+      await targetRow.save();
+      ctx.editMessageText(`✅ Approved: ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Approved: ${targetRow.Amount}`);
+    } else {
+      targetRow.Status = 'REJECTED';
+      await targetRow.save();
+      ctx.editMessageText(`❌ Rejected: ${targetRow.Amount}`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Rejected: ${targetRow.Amount}`);
+    }
+  } catch (e) { console.error(e); }
+});
+
+bot.launch();
