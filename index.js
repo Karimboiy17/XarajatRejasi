@@ -7,62 +7,84 @@ const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
 
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
-const serviceAccountAuth = new JWT({
+const auth = new JWT({
   email: creds.client_email,
   key: creds.private_key,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-const doc = new GoogleSpreadsheet(SHEET_ID, serviceAccountAuth);
+const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
 const userSessions = {};
 const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
 
+// --- START COMMAND ---
 bot.command(['start', 'new'], (ctx) => {
   const userId = ctx.from.id;
   userSessions[userId] = { step: 'CATEGORY' };
-  
-  ctx.reply('Welcome to IELTS Zone Expense Bot! 🎓\n\nStep 1: Choose a category:', 
+  ctx.reply('IELTS Zone Expense Pro 🎓\n\nStep 1: Choose a category:', 
     Markup.keyboard(categories, { columns: 2 }).oneTime().resize()
   );
 });
 
-bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
-  const text = ctx.message.text;
-
-  if (!userSessions[userId]) return;
-
-  const session = userSessions[userId];
-
-  if (session.step === 'CATEGORY') {
-    if (categories.includes(text)) {
-      session.category = text;
-      session.step = 'AMOUNT';
-      return ctx.reply(`${text} selected.\n\nStep 2: Enter the amount (numbers only):`, Markup.removeKeyboard());
-    }
-    return ctx.reply('Please choose a category from the buttons.');
-  }
-
-  if (session.step === 'AMOUNT') {
-    const amount = text.replace(/[^0-9]/g, ''); 
-    if (!amount) return ctx.reply('Please enter numbers only (e.g. 50000).');
-    session.amount = amount;
-    session.step = 'DESCRIPTION';
-    return ctx.reply(`Amount: ${amount} UZS.\n\nStep 3: What is this for? (Description)`);
-  }
-
-  if (session.step === 'DESCRIPTION') {
-    session.description = text;
-    const { category, amount, description } = session;
-    ctx.reply('Sending request... ⏳');
+// --- MANAGER REPORT COMMAND ---
+bot.command('report', async (ctx) => {
+  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.reply('Unauthorized.');
+  
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+    const approved = rows.filter(r => r.Status === 'APPROVED');
+    const total = approved.reduce((sum, r) => sum + Number(r.Amount || 0), 0);
     
+    ctx.reply(`📊 *IELTS Zone Spending Report*\n\n✅ Total Approved: *${total.toLocaleString()} UZS*\n📝 Approved Requests: ${approved.length}`, { parse_mode: 'Markdown' });
+  } catch (e) { ctx.reply('Error generating report.'); }
+});
+
+// --- MESSAGE HANDLING ---
+bot.on(['text', 'photo'], async (ctx) => {
+  const userId = ctx.from.id;
+  const session = userSessions[userId];
+  if (!session) return;
+
+  // STEP 1: CATEGORY
+  if (session.step === 'CATEGORY') {
+    if (categories.includes(ctx.message.text)) {
+      session.category = ctx.message.text;
+      session.step = 'AMOUNT';
+      return ctx.reply(`Category: ${session.category}\n\nStep 2: Enter Amount:`);
+    }
+  }
+
+  // STEP 2: AMOUNT
+  if (session.step === 'AMOUNT') {
+    const amt = ctx.message.text.replace(/[^0-9]/g, '');
+    if (!amt) return ctx.reply('Please enter numbers only.');
+    session.amount = amt;
+    session.step = 'DESCRIPTION';
+    return ctx.reply(`Amount: ${amt} UZS\n\nStep 3: What is this for?`);
+  }
+
+  // STEP 3: DESCRIPTION
+  if (session.step === 'DESCRIPTION') {
+    session.description = ctx.message.text;
+    session.step = 'PHOTO';
+    return ctx.reply('Step 4: Please send a photo of the receipt (or type "skip"):');
+  }
+
+  // STEP 4: PHOTO / FINAL SUBMISSION
+  if (session.step === 'PHOTO') {
+    session.receipt = ctx.message.photo ? 'Photo Attached' : 'No Photo';
+    const { category, amount, description, receipt } = session;
+    
+    ctx.reply('Saving... ⏳');
     try {
       await doc.loadInfo();
-      const sheet = doc.sheetsByTitle['Pending_Expenses']; 
+      const sheet = doc.sheetsByTitle['Pending_Expenses'];
       const row = await sheet.addRow({
         'Timestamp': new Date().toLocaleString(),
-        'Staff Name': ctx.from.first_name || 'Staff',
+        'Staff Name': ctx.from.first_name,
         'Amount': amount,
         'Description': `[${category}] ${description}`,
         'Status': 'PENDING',
@@ -70,7 +92,7 @@ bot.on('text', async (ctx) => {
       });
 
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `💰 *New Expense Request*\n\n👤 *From:* ${ctx.from.first_name}\n📂 *Category:* ${category}\n💵 *Amount:* ${amount} UZS\n📝 *Reason:* ${description}`, 
+        `💰 *New Request*\n👤 From: ${ctx.from.first_name}\n📂 Category: ${category}\n💵 Amount: ${amount} UZS\n📝 Reason: ${description}\n📸 Receipt: ${receipt}`, 
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -79,36 +101,34 @@ bot.on('text', async (ctx) => {
           ])
         }
       );
-
-      ctx.reply('✅ Request sent to manager!');
-      delete userSessions[userId]; 
-    } catch (e) {
-      ctx.reply('Error connecting to the system.');
-      console.error(e);
-    }
+      ctx.reply('✅ Sent to Manager!');
+      delete userSessions[userId];
+    } catch (e) { ctx.reply('Error saving.'); console.error(e); }
   }
 });
 
+// --- APPROVE / REJECT ---
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
-  const action = ctx.match[1];
-  const rowNum = ctx.match[2];
+  const [action, rowNum] = [ctx.match[1], ctx.match[2]];
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const targetRow = rows.find(r => r.rowNumber == rowNum);
+    
     if (action === 'app') {
       targetRow.Status = 'APPROVED';
       await targetRow.save();
-      ctx.editMessageText(`✅ Approved: ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Approved: ${targetRow.Amount}`);
+      ctx.editMessageText(`✅ Approved: ${targetRow.Amount} UZS`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `✅ Approved: ${targetRow.Amount} UZS`);
     } else {
       targetRow.Status = 'REJECTED';
       await targetRow.save();
-      ctx.editMessageText(`❌ Rejected: ${targetRow.Amount}`);
-      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Rejected: ${targetRow.Amount}`);
+      ctx.editMessageText(`❌ Rejected: ${targetRow.Amount} UZS`);
+      bot.telegram.sendMessage(targetRow._StaffChatId, `❌ Rejected: ${targetRow.Amount} UZS`);
     }
   } catch (e) { console.error(e); }
 });
 
 bot.launch();
+console.log('Expense Pro Active');
