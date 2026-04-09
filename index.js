@@ -18,48 +18,49 @@ const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
 const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
 
-// --- START COMMAND ---
+// Helper to show the main menu
+const showMainMenu = (ctx, text = 'Welcome back! Please choose a category to start:') => {
+  return ctx.reply(text, 
+    Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize()
+  );
+};
+
 bot.command(['start', 'new'], (ctx) => {
   const userId = ctx.from.id;
   userSessions[userId] = { step: 'CATEGORY' };
-  ctx.reply('IELTS Zone Expense Pro 🎓\n\nStep 1: Choose a category:', 
-    Markup.keyboard(categories, { columns: 2 }).oneTime().resize()
-  );
+  showMainMenu(ctx, 'IELTS Zone Expense Tracker 🎓\n\nChoose a category:');
 });
 
-// --- MANAGER REPORT COMMAND ---
-bot.command('report', async (ctx) => {
-  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.reply('Unauthorized.');
-  
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-    const rows = await sheet.getRows();
-    const approved = rows.filter(r => r.Status === 'APPROVED');
-    const total = approved.reduce((sum, r) => sum + Number(r.Amount || 0), 0);
-    
-    ctx.reply(`📊 *IELTS Zone Spending Report*\n\n✅ Total Approved: *${total.toLocaleString()} UZS*\n📝 Approved Requests: ${approved.length}`, { parse_mode: 'Markdown' });
-  } catch (e) { ctx.reply('Error generating report.'); }
-});
-
-// --- MESSAGE HANDLING ---
 bot.on(['text', 'photo'], async (ctx) => {
   const userId = ctx.from.id;
+  const text = ctx.message.text;
+
+  // 1. If they hit Cancel, reset everything
+  if (text === '❌ Cancel') {
+    userSessions[userId] = { step: 'CATEGORY' };
+    return showMainMenu(ctx, 'Request cancelled. Ready for a new one:');
+  }
+
+  // 2. If no session exists, start one automatically
+  if (!userSessions[userId]) {
+    userSessions[userId] = { step: 'CATEGORY' };
+  }
+
   const session = userSessions[userId];
-  if (!session) return;
 
   // STEP 1: CATEGORY
   if (session.step === 'CATEGORY') {
-    if (categories.includes(ctx.message.text)) {
-      session.category = ctx.message.text;
+    if (categories.includes(text)) {
+      session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply(`Category: ${session.category}\n\nStep 2: Enter Amount:`);
+      return ctx.reply(`Category: ${text}\n\nStep 2: Enter Amount (numbers only):`, Markup.keyboard(['❌ Cancel']).resize());
     }
+    return showMainMenu(ctx, 'Please choose a category from the buttons below:');
   }
 
   // STEP 2: AMOUNT
   if (session.step === 'AMOUNT') {
-    const amt = ctx.message.text.replace(/[^0-9]/g, '');
+    const amt = text.replace(/[^0-9]/g, '');
     if (!amt) return ctx.reply('Please enter numbers only.');
     session.amount = amt;
     session.step = 'DESCRIPTION';
@@ -68,31 +69,30 @@ bot.on(['text', 'photo'], async (ctx) => {
 
   // STEP 3: DESCRIPTION
   if (session.step === 'DESCRIPTION') {
-    session.description = ctx.message.text;
+    session.description = text;
     session.step = 'PHOTO';
-    return ctx.reply('Step 4: Please send a photo of the receipt (or type "skip"):');
+    return ctx.reply('Step 4: Send a photo of the receipt or type "skip":');
   }
 
-  // STEP 4: PHOTO / FINAL SUBMISSION
+  // STEP 4: PHOTO & SUBMIT
   if (session.step === 'PHOTO') {
     session.receipt = ctx.message.photo ? 'Photo Attached' : 'No Photo';
-    const { category, amount, description, receipt } = session;
+    ctx.reply('Processing... ⏳');
     
-    ctx.reply('Saving... ⏳');
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
       const row = await sheet.addRow({
         'Timestamp': new Date().toLocaleString(),
         'Staff Name': ctx.from.first_name,
-        'Amount': amount,
-        'Description': `[${category}] ${description}`,
+        'Amount': session.amount,
+        'Description': `[${session.category}] ${session.description}`,
         'Status': 'PENDING',
         '_StaffChatId': userId.toString()
       });
 
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `💰 *New Request*\n👤 From: ${ctx.from.first_name}\n📂 Category: ${category}\n💵 Amount: ${amount} UZS\n📝 Reason: ${description}\n📸 Receipt: ${receipt}`, 
+        `💰 *New Request*\n👤 From: ${ctx.from.first_name}\n📂 Category: ${session.category}\n💵 Amount: ${session.amount} UZS\n📝 Reason: ${session.description}\n📸 Receipt: ${session.receipt}`, 
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -101,13 +101,20 @@ bot.on(['text', 'photo'], async (ctx) => {
           ])
         }
       );
+
+      // RESET SESSION AUTOMATICALLY
+      userSessions[userId] = { step: 'CATEGORY' };
       ctx.reply('✅ Sent to Manager!');
-      delete userSessions[userId];
-    } catch (e) { ctx.reply('Error saving.'); console.error(e); }
+      return showMainMenu(ctx, 'Ready for your next request:');
+
+    } catch (e) {
+      ctx.reply('Error saving. Try /start');
+      console.error(e);
+    }
   }
 });
 
-// --- APPROVE / REJECT ---
+// Manager Actions
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const [action, rowNum] = [ctx.match[1], ctx.match[2]];
   try {
@@ -115,7 +122,6 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const targetRow = rows.find(r => r.rowNumber == rowNum);
-    
     if (action === 'app') {
       targetRow.Status = 'APPROVED';
       await targetRow.save();
@@ -131,4 +137,3 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
 });
 
 bot.launch();
-console.log('Expense Pro Active');
