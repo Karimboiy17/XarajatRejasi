@@ -15,52 +15,69 @@ const auth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
-const managerSessions = {}; // To track when you are sending a cheque
+const managerSessions = {};
 
 const branches = ['📍 Integro', '📍 Chilonzor', '📍 Drujba'];
 const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
+
+// --- ANALYTICS REPORT ---
+bot.command('report', async (ctx) => {
+  if (ctx.from.id.toString() !== MANAGER_ID) return;
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+    const paid = rows.filter(r => r.get('Status') === 'PAID');
+    
+    let branchTotals = {};
+    let total = 0;
+
+    paid.forEach(r => {
+      const b = r.get('Branch') || 'Unknown';
+      const a = Number(r.get('Amount') || 0);
+      branchTotals[b] = (branchTotals[b] || 0) + a;
+      total += a;
+    });
+
+    let msg = `📊 *IELTS Zone Final Report*\n\n✅ Total Paid: *${total.toLocaleString()} UZS*\n\n`;
+    for (const [name, amt] of Object.entries(branchTotals)) {
+      msg += `${name}: ${amt.toLocaleString()} UZS\n`;
+    }
+    ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch (e) { ctx.reply('Report Error.'); console.error(e); }
+});
 
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
   ctx.reply('IELTS Zone Finance Bot 🎓\nSelect Branch:', Markup.keyboard(branches).oneTime().resize());
 });
 
-// --- MAIN MESSAGE LOGIC ---
 bot.on(['text', 'photo'], async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
 
-  // 1. Logic for Manager sending a Cheque
+  // Manager Cheque Logic
   if (userId === MANAGER_ID && managerSessions[userId]) {
     if (ctx.message.photo) {
-      const rowNum = managerSessions[userId].rowNum;
-      const staffId = managerSessions[userId].staffId;
-
+      const { rowNum, staffId } = managerSessions[userId];
       try {
         await doc.loadInfo();
         const sheet = doc.sheetsByTitle['Pending_Expenses'];
         const rows = await sheet.getRows();
-        const targetRow = rows.find(r => r.rowNumber == rowNum);
-
-        targetRow.set('Status', 'PAID');
-        await targetRow.save();
-
-        // Send Cheque to Staff
-        await bot.telegram.sendPhoto(staffId, ctx.message.photo[0].file_id, {
-          caption: `✅ Your payment has been sent! Total: ${targetRow.get('Amount')} UZS`
-        });
-
-        ctx.reply(`💰 Payment confirmed and cheque sent to staff.`);
+        const row = rows.find(r => r.rowNumber == rowNum);
+        row.set('Status', 'PAID');
+        await row.save();
+        await bot.telegram.sendPhoto(staffId, ctx.message.photo[0].file_id, { caption: `✅ Payment sent: ${row.get('Amount')} UZS` });
+        ctx.reply('💰 Success! Cheque sent to staff.');
         delete managerSessions[userId];
-      } catch (e) { ctx.reply('Error updating sheet.'); }
+      } catch (e) { ctx.reply('Error.'); }
       return;
     }
   }
 
-  // 2. Logic for Staff making requests
-  if (text === '❌ Cancel') {
+  if (text === '❌ Cancel' || text === '/start') {
     userSessions[userId] = { step: 'BRANCH' };
-    return ctx.reply('Reset.', Markup.keyboard(branches).resize());
+    return ctx.reply('Select Branch:', Markup.keyboard(branches).resize());
   }
 
   const session = userSessions[userId];
@@ -73,27 +90,23 @@ bot.on(['text', 'photo'], async (ctx) => {
       return ctx.reply('Select Category:', Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize());
     }
   }
-
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply(`Amount for ${text}:`, Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply('Enter Amount (UZS):', Markup.keyboard(['❌ Cancel']).resize());
     }
   }
-
   if (session.step === 'AMOUNT') {
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'CARD';
     return ctx.reply('Enter Card Number:');
   }
-
   if (session.step === 'CARD') {
     session.card = text;
     session.step = 'DESCRIPTION';
-    return ctx.reply('Enter Reason:');
+    return ctx.reply('Reason:');
   }
-
   if (session.step === 'DESCRIPTION') {
     try {
       await doc.loadInfo();
@@ -108,35 +121,27 @@ bot.on(['text', 'photo'], async (ctx) => {
         'Status': 'PENDING',
         '_StaffChatId': userId
       });
-
-      await bot.telegram.sendMessage(MANAGER_ID, 
-        `🏛 *New Request*\n📍 Branch: ${session.branch}\n💵 Amount: ${session.amount} UZS\n💳 Card: ${session.card}\n📝 Reason: ${text}`, 
-        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve & Send Cheque', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]]) }
-      );
-
-      ctx.reply('✅ Sent for approval.');
+      await bot.telegram.sendMessage(MANAGER_ID, `🏛 *New Request*\n📍 ${session.branch}\n💵 ${session.amount} UZS\n💳 ${session.card}\n📝 ${text}`, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve & Send Cheque', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]])
+      });
+      ctx.reply('✅ Sent!');
       delete userSessions[userId];
+      return ctx.reply('Next?', Markup.keyboard(branches).resize());
     } catch (e) { ctx.reply('Error.'); }
   }
 });
 
-// --- APPROVE BUTTON ---
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const [action, rowNum] = [ctx.match[1], ctx.match[2]];
-  await doc.loadInfo();
-  const sheet = doc.sheetsByTitle['Pending_Expenses'];
-  const rows = await sheet.getRows();
-  const targetRow = rows.find(r => r.rowNumber == rowNum);
-
   if (action === 'app') {
-    managerSessions[MANAGER_ID] = { 
-        rowNum: rowNum, 
-        staffId: targetRow.get('_StaffChatId') 
-    };
-    ctx.editMessageText(`💸 You approved ${targetRow.get('Amount')} UZS.\n\nNow, please **send the payment cheque (Photo)** here:`);
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.rowNumber == rowNum);
+    managerSessions[MANAGER_ID] = { rowNum, staffId: row.get('_StaffChatId') };
+    ctx.editMessageText(`💸 Send the Cheque photo for ${row.get('Amount')} UZS:`);
   } else {
-    targetRow.set('Status', 'REJECTED');
-    await targetRow.save();
     ctx.editMessageText('❌ Rejected.');
   }
 });
