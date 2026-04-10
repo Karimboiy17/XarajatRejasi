@@ -6,6 +6,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
 
+// Google Sheets Authentication
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
 const auth = new JWT({
   email: creds.client_email,
@@ -16,35 +17,68 @@ const auth = new JWT({
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
 
+// --- SYSTEM CONSTANTS ---
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
 const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
 
-// --- REPORT COMMAND ---
+// --- EXECUTIVE REPORT ---
 bot.command('report', async (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
+    
+    // Filter for PAID only and avoid crashes on empty rows
     const paid = rows.filter(r => r.get('Status') && r.get('Status').toString().toUpperCase() === 'PAID');
-    let total = 0;
+    
+    let branchTotals = {};
+    let typeTotals = { 'Karta': 0, 'Naqd': 0, 'MCHJ': 0 };
+    let grandTotal = 0;
+
     paid.forEach(r => {
-      const raw = r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0';
-      total += parseInt(raw) || 0;
+      const b = r.get('Branch') || '📍 Unknown';
+      const t = r.get('Payment Type') || '';
+      
+      // Clean Amount: Remove commas, spaces, or letters
+      const rawAmt = r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0';
+      const val = parseInt(rawAmt) || 0;
+      
+      branchTotals[b] = (branchTotals[b] || 0) + val;
+      
+      if (t.includes('Karta')) typeTotals['Karta'] += val;
+      else if (t.includes('Naqd')) typeTotals['Naqd'] += val;
+      else if (t.includes('MCHJ')) typeTotals['MCHJ'] += val;
+
+      grandTotal += val;
     });
-    ctx.reply(`📊 *IELTS Zone Report*\nTotal Paid: *${total.toLocaleString()} UZS*`, { parse_mode: 'Markdown' });
-  } catch (e) { ctx.reply('❌ Error'); }
+
+    let msg = `📊 *IELTS Zone Executive Report*\n━━━━━━━━━━━━━━━\n`;
+    msg += `💰 *Total Paid:* ${grandTotal.toLocaleString()} UZS\n\n`;
+    
+    msg += `🏢 *By Branch:*\n`;
+    branches.forEach(b => {
+      const amt = branchTotals[b] || 0;
+      msg += `• ${b}: ${amt.toLocaleString()} UZS\n`;
+    });
+
+    msg += `\n💳 *By Payment Type:*\n`;
+    msg += `• Karta: ${typeTotals['Karta'].toLocaleString()} UZS\n`;
+    msg += `• Naqd: ${typeTotals['Naqd'].toLocaleString()} UZS\n`;
+    msg += `• MCHJ: ${typeTotals['MCHJ'].toLocaleString()} UZS\n`;
+    msg += `━━━━━━━━━━━━━━━`;
+
+    ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(e);
+    ctx.reply('❌ Report crashed. Check Google Sheet connection.');
+  }
 });
 
-bot.command(['start', 'new'], (ctx) => {
-  userSessions[ctx.from.id] = { step: 'BRANCH' };
-  ctx.reply('Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
-});
-
-// --- HANDLE CHEQUE REPLIES ---
+// --- CHEQUE REPLY HANDLER (MULTI-PHOTO SUPPORT) ---
 bot.on('photo', async (ctx) => {
   const reply = ctx.message.reply_to_message;
-  // Check if staff is replying to an approval message
+  // Check if staff is replying to an approval message with an ID
   if (reply && reply.text && reply.text.includes('ID:')) {
     const rowNum = reply.text.split('ID:')[1].trim();
     try {
@@ -61,48 +95,66 @@ bot.on('photo', async (ctx) => {
       
       // Forward the photo to the Manager
       await bot.telegram.sendPhoto(MANAGER_ID, ctx.message.photo[0].file_id, {
-        caption: `📸 Cheque for Request #${rowNum}\nBranch: ${row.get('Branch')}\nAmount: ${row.get('Amount')}`
+        caption: `📸 New Cheque (ID: ${rowNum})\n📍 Branch: ${row.get('Branch')}\n💵 Amount: ${row.get('Amount')} UZS\n📝 Desc: ${row.get('Description')}`
       });
-    } catch (e) { console.error(e); }
+    } catch (e) { 
+      console.error(e); 
+    }
   }
+});
+
+// --- NEW REQUEST WORKFLOW ---
+bot.command(['start', 'new'], (ctx) => {
+  userSessions[ctx.from.id] = { step: 'BRANCH' };
+  ctx.reply('IELTS Zone Finance Bot 🎓\nFilialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
 });
 
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
 
+  // Global Cancel
   if (text === '❌ Cancel') {
     userSessions[userId] = { step: 'BRANCH' };
-    return ctx.reply('Cancelled.', Markup.keyboard(branches, { columns: 2 }).resize());
+    return ctx.reply('Bekor qilindi. Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
 
   const session = userSessions[userId];
   if (!session) return;
 
+  // 1. BRANCH
   if (session.step === 'BRANCH') {
     if (branches.includes(text)) {
       session.branch = text;
       session.step = 'CATEGORY';
-      return ctx.reply('Kategoriya:', Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize());
+      return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize());
     }
   }
+  
+  // 2. CATEGORY
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply('Summa:', Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply('Summani kiriting (Faqat raqam):', Markup.keyboard(['❌ Cancel']).resize());
     }
   }
+  
+  // 3. AMOUNT
   if (session.step === 'AMOUNT') {
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
-    return ctx.reply('Tavsif (Description):');
+    return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
   }
+  
+  // 4. DESCRIPTION
   if (session.step === 'DESCRIPTION') {
     session.description = text;
     session.step = 'PAY_TYPE';
-    return ctx.reply('To\'lov turi:', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Cancel']).resize());
+    return ctx.reply('To\'lov turi qanday bo\'ladi?', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Cancel']).resize());
   }
+  
+  // 5. PAYMENT TYPE
   if (session.step === 'PAY_TYPE') {
     session.payType = text;
     if (text === 'Naqd') {
@@ -110,15 +162,19 @@ bot.on('text', async (ctx) => {
         return submitToManager(ctx, session);
     }
     session.step = 'PAY_DETAIL';
-    return ctx.reply(text === 'Karta' ? 'Karta raqami:' : 'Firma nomi:');
+    return ctx.reply(text === 'Karta' ? 'Karta raqamini kiriting:' : 'Firma nomini kiriting:');
   }
+  
+  // 6. PAYMENT DETAIL
   if (session.step === 'PAY_DETAIL') {
     session.payDetail = text;
     return submitToManager(ctx, session);
   }
 });
 
+// --- SUBMIT TO MANAGER LOGIC ---
 async function submitToManager(ctx, session) {
+  const userId = ctx.from.id.toString();
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
@@ -131,20 +187,32 @@ async function submitToManager(ctx, session) {
       'Payment Detail': session.payDetail,
       'Description': `[${session.category}] ${session.description}`,
       'Status': 'PENDING',
-      '_StaffChatId': ctx.from.id.toString()
+      '_StaffChatId': userId
     });
 
-    await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Request*\n📍 ${session.branch}\n💵 ${session.amount}\n💳 ${session.payType}\n📝 ${session.payDetail}\n💬 ${session.description}`, {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]])
-    });
-    delete userSessions[ctx.from.id];
-    ctx.reply('✅ Sent for approval!');
-  } catch (e) { ctx.reply('Error!'); }
+    await bot.telegram.sendMessage(MANAGER_ID, 
+      `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${session.amount} UZS\n💳 To'lov: ${session.payType}\n📝 Detal: ${session.payDetail}\n💬 Sabab: ${session.description}`, 
+      {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Tasdiqlash', `app_${row.rowNumber}`)], 
+          [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]
+        ])
+      }
+    );
+
+    delete userSessions[userId];
+    ctx.reply('✅ Menejerga tasdiqlash uchun yuborildi!');
+  } catch (e) { 
+    ctx.reply('❌ Xatolik yuz berdi. Iltimos qayta urining.'); 
+    console.error(e); 
+  }
 }
 
+// --- MANAGER INLINE BUTTON HANDLER ---
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const [action, rowNum] = [ctx.match[1], ctx.match[2]];
+  
   if (action === 'app') {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
@@ -152,12 +220,17 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const row = rows.find(r => r.rowNumber == rowNum);
     const staffId = row.get('_StaffChatId');
     
-    // Important: The text must contain "ID:" for the reply logic to work
-    await bot.telegram.sendMessage(staffId, `✅ Approved! Summa: ${row.get('Amount')} UZS.\n\nReply to THIS message with your cheque photo(s).\n\nID: ${rowNum}`);
-    ctx.editMessageText('💸 Approved. Waiting for staff to reply with cheque.');
+    // Send message to staff prompting for reply
+    await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi!\nSumma: ${row.get('Amount')} UZS.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
+    
+    ctx.editMessageText(`💸 Tasdiqlandi. Filial rahbaridan chek kutilmoqda...`);
   } else {
-    ctx.editMessageText('❌ Rejected.');
+    ctx.editMessageText('❌ So\'rov rad etildi.');
   }
 });
 
 bot.launch();
+
+// Enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
