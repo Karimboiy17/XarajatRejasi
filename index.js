@@ -14,92 +14,64 @@ const auth = new JWT({
 });
 
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
-
 const userSessions = {};
-const categories = ['🏠 Rent', '📢 Marketing', '💻 IT/Office', '☕️ Kitchen', '🎓 Teacher Salary', '🛠 Maintenance'];
 
-const showMainMenu = (ctx, text = 'Please choose a category:') => {
+// --- THE CLEANED CATEGORY LIST ---
+const categories = [
+  'Bonus natijalar uchun', 'tugilgan kun uchun', 'printer rang', 
+  'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 
+  'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 
+  'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 
+  'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 
+  'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 
+  'refound', 'remont qurilish'
+];
+
+const showMainMenu = (ctx, text = 'Please select a category:') => {
   return ctx.reply(text, 
     Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize()
   );
 };
 
-// --- ANALYTICS REPORT COMMAND ---
-bot.command('report', async (ctx) => {
-  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.reply('Unauthorized.');
-
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-    const rows = await sheet.getRows();
-
-    const approvedRows = rows.filter(r => r.get('Status') === 'APPROVED' || r.get('Status') === 'TASDIQLANDI');
-    const totalSpent = approvedRows.reduce((sum, r) => sum + Number(r.get('Amount') || 0), 0);
-
-    const categoryTotals = {};
-    approvedRows.forEach(r => {
-      const desc = r.get('Description') || '';
-      let cat = desc.split(']')[0].replace('[', '').trim() || 'Other';
-      categoryTotals[cat] = (categoryTotals[cat] || 0) + Number(r.get('Amount') || 0);
-    });
-
-    let reportMsg = `📊 *IELTS Zone Spending Report*\n\n`;
-    reportMsg += `✅ Total Approved: *${totalSpent.toLocaleString()} UZS*\n\n`;
-    reportMsg += `*Breakdown by Category:*\n`;
-    
-    for (const [cat, amt] of Object.entries(categoryTotals)) {
-      reportMsg += `• ${cat}: ${amt.toLocaleString()} UZS\n`;
-    }
-
-    ctx.reply(reportMsg, { parse_mode: 'Markdown' });
-  } catch (e) {
-    ctx.reply('Error generating report. Check logs.');
-    console.error(e);
-  }
-});
-
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'CATEGORY' };
-  showMainMenu(ctx, 'IELTS Zone Expense Tracker 🎓');
+  showMainMenu(ctx, 'IELTS Zone Finance System 🎓');
 });
 
-// --- MAIN MESSAGE LOGIC ---
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text;
 
-  // Ignore if it's a command (like /report) so it doesn't trigger the category logic
   if (text.startsWith('/')) return;
-
   if (text === '❌ Cancel') {
     userSessions[userId] = { step: 'CATEGORY' };
-    return showMainMenu(ctx, 'Cancelled. Choose a new category:');
+    return showMainMenu(ctx, 'Cancelled. Select a category:');
   }
 
   if (!userSessions[userId]) userSessions[userId] = { step: 'CATEGORY' };
   const session = userSessions[userId];
 
+  // STEP 1: CATEGORY
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply(`Selected: ${text}\n\nEnter Amount:`, Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply(`Selected: ${text}\n\nEnter Amount (UZS):`, Markup.keyboard(['❌ Cancel']).resize());
     }
     return showMainMenu(ctx);
   }
 
+  // STEP 2: AMOUNT
   if (session.step === 'AMOUNT') {
     const amt = text.replace(/[^0-9]/g, '');
-    if (!amt) return ctx.reply('Numbers only please.');
+    if (!amt) return ctx.reply('Please enter numbers only.');
     session.amount = amt;
     session.step = 'DESCRIPTION';
-    return ctx.reply('What is this for? (Description)');
+    return ctx.reply('Description / Reason:');
   }
 
+  // STEP 3: DESCRIPTION & SUBMIT
   if (session.step === 'DESCRIPTION') {
-    session.description = text;
-    ctx.reply('Saving... ⏳');
-    
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
@@ -107,28 +79,22 @@ bot.on('text', async (ctx) => {
         'Timestamp': new Date().toLocaleString(),
         'Staff Name': ctx.from.first_name || 'Staff',
         'Amount': session.amount,
-        'Description': `[${session.category}] ${session.description}`,
+        'Description': `[${session.category}] ${text}`,
         'Status': 'PENDING',
         '_StaffChatId': userId.toString()
       });
 
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `💰 *New Request*\n👤 From: ${ctx.from.first_name}\n📂 Category: ${session.category}\n💵 Amount: ${session.amount} UZS\n📝 Reason: ${session.description}`, 
-        {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)],
-            [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]
-          ])
-        }
+        `💰 *New Request*\n👤 From: ${ctx.from.first_name}\n📂 Category: ${session.category}\n💵 Amount: ${session.amount} UZS\n📝 Reason: ${text}`, 
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]]) }
       );
 
       userSessions[userId] = { step: 'CATEGORY' };
       ctx.reply('✅ Sent to Manager!');
-      return showMainMenu(ctx, 'Ready for next:');
+      return showMainMenu(ctx);
     } catch (e) {
       console.error(e);
-      ctx.reply('Error saving.');
+      ctx.reply('Error saving to sheet.');
     }
   }
 });
@@ -141,21 +107,18 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const targetRow = rows.find(r => r.rowNumber == rowNum);
-
-    if (!targetRow) return ctx.answerCbQuery('Error: Not found.');
-
     const amount = targetRow.get('Amount') || '0';
 
     if (action === 'app') {
       targetRow.set('Status', 'APPROVED');
       await targetRow.save();
       await ctx.editMessageText(`✅ Approved: ${amount} UZS`).catch(() => {});
-      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `✅ Approved: ${amount} UZS`).catch(() => {});
+      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `✅ Your request for ${amount} UZS was APPROVED.`).catch(() => {});
     } else {
       targetRow.set('Status', 'REJECTED');
       await targetRow.save();
       await ctx.editMessageText(`❌ Rejected: ${amount} UZS`).catch(() => {});
-      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `❌ Rejected: ${amount} UZS`).catch(() => {});
+      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `❌ Your request for ${amount} UZS was REJECTED.`).catch(() => {});
     }
   } catch (e) { console.error(e); }
 });
