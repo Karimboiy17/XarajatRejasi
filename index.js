@@ -2,10 +2,10 @@ const { Telegraf, Markup } = require('telegraf');
 const { JWT } = require('google-auth-library');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 
+// 1. Setup
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
-const PROC_ID = process.env.PROCUREMENT_CHAT_ID; // New Variable
 
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
 const auth = new JWT({
@@ -17,59 +17,74 @@ const auth = new JWT({
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
 
+// 2. Data Lists
 const branches = ['📍 Integro', '📍 Chilonzor', '📍 Drujba'];
-const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
+const categories = [
+  'tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 
+  'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 
+  'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 
+  'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 
+  'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'
+];
 
+// 3. Start Command
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
-  ctx.reply('Select Branch:', Markup.keyboard([...branches, '❌ Cancel']).resize());
+  ctx.reply('IELTS Zone Finance Bot 🎓\nSelect Branch:', Markup.keyboard(branches).oneTime().resize());
 });
 
-bot.on(['text', 'photo'], async (ctx) => {
+// 4. Main Conversation Logic
+bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text;
+
   if (text === '❌ Cancel' || text === '/start') {
     userSessions[userId] = { step: 'BRANCH' };
-    return ctx.reply('Reset.', Markup.keyboard([...branches]).resize());
+    return ctx.reply('Reset. Select Branch:', Markup.keyboard(branches).resize());
   }
 
-  const session = userSessions[userId] || (userSessions[userId] = { step: 'BRANCH' });
+  const session = userSessions[userId];
+  if (!session) return ctx.reply('Type /start to begin.');
 
-  // 1. SELECT BRANCH
+  // STEP 1: BRANCH
   if (session.step === 'BRANCH') {
     if (branches.includes(text)) {
       session.branch = text;
       session.step = 'CATEGORY';
-      return ctx.reply(`Branch: ${text}\nSelect Category:`, Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize());
+      return ctx.reply('Select Category:', Markup.keyboard([...categories, '❌ Cancel'], { columns: 2 }).resize());
     }
   }
 
-  // 2. SELECT CATEGORY
+  // STEP 2: CATEGORY
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply('Enter Amount (UZS):', Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply(`Category: ${text}\n\nEnter Amount (UZS):`, Markup.keyboard(['❌ Cancel']).resize());
     }
   }
 
-  // 3. AMOUNT
+  // STEP 3: AMOUNT
   if (session.step === 'AMOUNT') {
-    session.amount = text.replace(/[^0-9]/g, '');
+    const amt = text.replace(/[^0-9]/g, '');
+    if (!amt) return ctx.reply('Numbers only please.');
+    session.amount = amt;
     session.step = 'CARD';
-    return ctx.reply('Please send your Card Number (where to send money):');
+    return ctx.reply('Enter Card Number (where to send money):', Markup.keyboard(['❌ Cancel']).resize());
   }
 
-  // 4. CARD NUMBER
+  // STEP 4: CARD
   if (session.step === 'CARD') {
     session.card = text;
     session.step = 'DESCRIPTION';
-    return ctx.reply('Description / Reason:');
+    return ctx.reply('Enter Reason / Description:', Markup.keyboard(['❌ Cancel']).resize());
   }
 
-  // 5. DESCRIPTION & SUBMIT TO MANAGER
+  // STEP 5: FINAL SUBMIT
   if (session.step === 'DESCRIPTION') {
     session.description = text;
+    ctx.reply('Saving... ⏳');
+    
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
@@ -79,55 +94,53 @@ bot.on(['text', 'photo'], async (ctx) => {
         'Staff Name': ctx.from.first_name,
         'Amount': session.amount,
         'Card Number': session.card,
-        'Description': `[${session.category}] ${text}`,
-        'Status': 'WAITING MANAGER'
+        'Description': `[${session.category}] ${session.description}`,
+        'Status': 'PENDING',
+        '_StaffChatId': userId.toString()
       });
 
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `🏛 *New Branch Request*\n📍 Branch: ${session.branch}\n👤 From: ${ctx.from.first_name}\n📂 Cat: ${session.category}\n💵 Amount: ${session.amount} UZS\n💳 Card: ${session.card}\n📝 Reason: ${text}`, 
-        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve for Procurement', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]]) }
+        `🏛 *New Request*\n📍 Branch: ${session.branch}\n👤 From: ${ctx.from.first_name}\n📂 Cat: ${session.category}\n💵 Amount: ${session.amount} UZS\n💳 Card: ${session.card}\n📝 Reason: ${session.description}`, 
+        { 
+          parse_mode: 'Markdown', 
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)],
+            [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]
+          ]) 
+        }
       );
 
-      ctx.reply('✅ Sent for Approval!');
       delete userSessions[userId];
-    } catch (e) { ctx.reply('Sheet Error.'); }
+      ctx.reply('✅ Sent to Manager!');
+      return ctx.reply('Select Branch for next:', Markup.keyboard(branches).resize());
+    } catch (e) {
+      ctx.reply('Error saving. Check Sheet name.');
+      console.error(e);
+    }
   }
 });
 
-// --- ACTIONS FOR MANAGER AND PROCUREMENT ---
-bot.action(/^(app|rej|done)_(.+)$/, async (ctx) => {
+// 5. Manager Approval (Skipping Procurement)
+bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
   const [action, rowNum] = [ctx.match[1], ctx.match[2]];
-  await doc.loadInfo();
-  const sheet = doc.sheetsByTitle['Pending_Expenses'];
-  const rows = await sheet.getRows();
-  const targetRow = rows.find(r => r.rowNumber == rowNum);
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    const rows = await sheet.getRows();
+    const targetRow = rows.find(r => r.rowNumber == rowNum);
 
-  // MANAGER APPROVAL -> SENDS TO PROCUREMENT
-  if (action === 'app') {
-    targetRow.set('Status', 'APPROVED BY MANAGER');
-    await targetRow.save();
-    
-    await bot.telegram.sendMessage(PROC_ID, 
-      `💸 *PAYMENT REQUIRED*\n📍 Branch: ${targetRow.get('Branch')}\n💵 Amount: ${targetRow.get('Amount')} UZS\n💳 Card: ${targetRow.get('Card Number')}\n👤 To: ${targetRow.get('Staff Name')}\n📝 Info: ${targetRow.get('Description')}`,
-      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('📤 I Sent the Money (Cheque)', `done_${rowNum}`)]]) }
-    );
-    
-    ctx.editMessageText(`✅ Approved and sent to Procurement.`);
-  }
-
-  // PROCUREMENT COMPLETED
-  if (action === 'done') {
-    targetRow.set('Status', 'PAID / COMPLETED');
-    await targetRow.save();
-    ctx.editMessageText(`💰 Money Sent & Confirmed.`);
-    bot.telegram.sendMessage(MANAGER_ID, `💳 Procurement just paid for [${targetRow.get('Branch')}] ${targetRow.get('Amount')} UZS.`);
-  }
-
-  if (action === 'rej') {
-    targetRow.set('Status', 'REJECTED');
-    await targetRow.save();
-    ctx.editMessageText('❌ Request Rejected.');
-  }
+    if (action === 'app') {
+      targetRow.set('Status', 'APPROVED');
+      await targetRow.save();
+      ctx.editMessageText(`✅ Approved: ${targetRow.get('Amount')} UZS`);
+      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `✅ Your request for ${targetRow.get('Amount')} was Approved.`);
+    } else {
+      targetRow.set('Status', 'REJECTED');
+      await targetRow.save();
+      ctx.editMessageText('❌ Rejected.');
+      bot.telegram.sendMessage(targetRow.get('_StaffChatId'), `❌ Your request was Rejected.`);
+    }
+  } catch (e) { console.error(e); }
 });
 
 bot.launch();
