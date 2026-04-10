@@ -15,13 +15,11 @@ const auth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
-const managerSessions = {};
 
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
-
-// Removed 'naqd' from here
 const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
 
+// --- REPORT COMMAND ---
 bot.command('report', async (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
   try {
@@ -29,30 +27,13 @@ bot.command('report', async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const paid = rows.filter(r => r.get('Status') && r.get('Status').toString().toUpperCase() === 'PAID');
-    
-    let branchTotals = {};
-    let typeTotals = { 'Karta': 0, 'Naqd': 0, 'MCHJ': 0 };
-    let grandTotal = 0;
-
+    let total = 0;
     paid.forEach(r => {
-      const b = r.get('Branch') || '📍 Unknown';
-      const t = r.get('Payment Type') || '';
-      const rawAmt = r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0';
-      const val = parseInt(rawAmt) || 0;
-      branchTotals[b] = (branchTotals[b] || 0) + val;
-      if (t.includes('Karta')) typeTotals['Karta'] += val;
-      else if (t.includes('Naqd')) typeTotals['Naqd'] += val;
-      else if (t.includes('MCHJ')) typeTotals['MCHJ'] += val;
-      grandTotal += val;
+      const raw = r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0';
+      total += parseInt(raw) || 0;
     });
-
-    let msg = `📊 *IELTS Zone Final Report*\n━━━━━━━━━━━━━━━\n`;
-    msg += `💰 *Jami To'langan:* ${grandTotal.toLocaleString()} UZS\n\n`;
-    msg += `🏢 *Filiallar:* \n`;
-    branches.forEach(b => msg += `• ${b}: ${(branchTotals[b] || 0).toLocaleString()} UZS\n`);
-    msg += `\n💳 *To'lov turi:* \n• Karta: ${typeTotals['Karta'].toLocaleString()}\n• Naqd: ${typeTotals['Naqd'].toLocaleString()}\n• MCHJ: ${typeTotals['MCHJ'].toLocaleString()}\n━━━━━━━━━━━━━━━`;
-    ctx.reply(msg, { parse_mode: 'Markdown' });
-  } catch (e) { ctx.reply('❌ Report error.'); }
+    ctx.reply(`📊 *IELTS Zone Report*\nTotal Paid: *${total.toLocaleString()} UZS*`, { parse_mode: 'Markdown' });
+  } catch (e) { ctx.reply('❌ Error'); }
 });
 
 bot.command(['start', 'new'], (ctx) => {
@@ -60,29 +41,39 @@ bot.command(['start', 'new'], (ctx) => {
   ctx.reply('Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
 });
 
-bot.on(['text', 'photo'], async (ctx) => {
-  const userId = ctx.from.id.toString();
-  const text = ctx.message.text;
-
-  if (userId === MANAGER_ID && managerSessions[userId] && ctx.message.photo) {
-    const { rowNum, staffId } = managerSessions[userId];
+// --- HANDLE CHEQUE REPLIES ---
+bot.on('photo', async (ctx) => {
+  const reply = ctx.message.reply_to_message;
+  // Check if staff is replying to an approval message
+  if (reply && reply.text && reply.text.includes('ID:')) {
+    const rowNum = reply.text.split('ID:')[1].trim();
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
       const rows = await sheet.getRows();
       const row = rows.find(r => r.rowNumber == rowNum);
-      row.set('Status', 'PAID');
-      await row.save();
-      await bot.telegram.sendPhoto(staffId, ctx.message.photo[0].file_id, { caption: `✅ To'lov tasdiqlandi: ${row.get('Amount')} UZS` });
-      ctx.reply('💰 Status: PAID.');
-      delete managerSessions[userId];
-    } catch (e) { ctx.reply('Xatolik!'); }
-    return;
+      
+      if (row.get('Status') !== 'PAID') {
+        row.set('Status', 'PAID');
+        await row.save();
+        ctx.reply('✅ Cheque received! Status updated to PAID.');
+      }
+      
+      // Forward the photo to the Manager
+      await bot.telegram.sendPhoto(MANAGER_ID, ctx.message.photo[0].file_id, {
+        caption: `📸 Cheque for Request #${rowNum}\nBranch: ${row.get('Branch')}\nAmount: ${row.get('Amount')}`
+      });
+    } catch (e) { console.error(e); }
   }
+});
 
-  if (text === '❌ Cancel' || text === '/start') {
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const text = ctx.message.text;
+
+  if (text === '❌ Cancel') {
     userSessions[userId] = { step: 'BRANCH' };
-    return ctx.reply('Tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
+    return ctx.reply('Cancelled.', Markup.keyboard(branches, { columns: 2 }).resize());
   }
 
   const session = userSessions[userId];
@@ -113,19 +104,13 @@ bot.on(['text', 'photo'], async (ctx) => {
     return ctx.reply('To\'lov turi:', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Cancel']).resize());
   }
   if (session.step === 'PAY_TYPE') {
-    if (text === 'Karta') {
-      session.payType = 'Karta';
-      session.step = 'PAY_DETAIL';
-      return ctx.reply('Karta raqami:');
-    } else if (text === 'MCHJ hisobi') {
-      session.payType = 'MCHJ';
-      session.step = 'PAY_DETAIL';
-      return ctx.reply('Firma nomi:');
-    } else if (text === 'Naqd') {
-      session.payType = 'Naqd';
-      session.payDetail = 'N/A';
-      return submitToManager(ctx, session);
+    session.payType = text;
+    if (text === 'Naqd') {
+        session.payDetail = 'N/A';
+        return submitToManager(ctx, session);
     }
+    session.step = 'PAY_DETAIL';
+    return ctx.reply(text === 'Karta' ? 'Karta raqami:' : 'Firma nomi:');
   }
   if (session.step === 'PAY_DETAIL') {
     session.payDetail = text;
@@ -134,7 +119,6 @@ bot.on(['text', 'photo'], async (ctx) => {
 });
 
 async function submitToManager(ctx, session) {
-  const userId = ctx.from.id.toString();
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
@@ -147,15 +131,16 @@ async function submitToManager(ctx, session) {
       'Payment Detail': session.payDetail,
       'Description': `[${session.category}] ${session.description}`,
       'Status': 'PENDING',
-      '_StaffChatId': userId
+      '_StaffChatId': ctx.from.id.toString()
     });
-    await bot.telegram.sendMessage(MANAGER_ID, `🏢 *So'rov*\n📍 ${session.branch}\n💵 ${session.amount}\n💳 ${session.payType}\n📝 ${session.payDetail}\n💬 ${session.description}`, {
+
+    await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Request*\n📍 ${session.branch}\n💵 ${session.amount}\n💳 ${session.payType}\n📝 ${session.payDetail}\n💬 ${session.description}`, {
       parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.callback('✅ Tasdiqlash', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]])
+      ...Markup.inlineKeyboard([[Markup.button.callback('✅ Approve', `app_${row.rowNumber}`)], [Markup.button.callback('❌ Reject', `rej_${row.rowNumber}`)]])
     });
-    ctx.reply('✅ Yuborildi!');
-    delete userSessions[userId];
-  } catch (e) { ctx.reply('Xato!'); }
+    delete userSessions[ctx.from.id];
+    ctx.reply('✅ Sent for approval!');
+  } catch (e) { ctx.reply('Error!'); }
 }
 
 bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
@@ -165,9 +150,14 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const row = rows.find(r => r.rowNumber == rowNum);
-    managerSessions[MANAGER_ID] = { rowNum, staffId: row.get('_StaffChatId') };
-    ctx.editMessageText(`📸 Chek rasmini yuboring (${row.get('Amount')} UZS):`);
-  } else { ctx.editMessageText('❌ Rad etildi.'); }
+    const staffId = row.get('_StaffChatId');
+    
+    // Important: The text must contain "ID:" for the reply logic to work
+    await bot.telegram.sendMessage(staffId, `✅ Approved! Summa: ${row.get('Amount')} UZS.\n\nReply to THIS message with your cheque photo(s).\n\nID: ${rowNum}`);
+    ctx.editMessageText('💸 Approved. Waiting for staff to reply with cheque.');
+  } else {
+    ctx.editMessageText('❌ Rejected.');
+  }
 });
 
 bot.launch();
