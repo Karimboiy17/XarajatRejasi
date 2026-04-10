@@ -29,7 +29,6 @@ bot.command('report', async (ctx) => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     
-    // Filter for PAID only and avoid crashes on empty rows
     const paid = rows.filter(r => r.get('Status') && r.get('Status').toString().toUpperCase() === 'PAID');
     
     let branchTotals = {};
@@ -40,7 +39,6 @@ bot.command('report', async (ctx) => {
       const b = r.get('Branch') || '📍 Unknown';
       const t = r.get('Payment Type') || '';
       
-      // Clean Amount: Remove commas, spaces, or letters
       const rawAmt = r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0';
       const val = parseInt(rawAmt) || 0;
       
@@ -54,18 +52,18 @@ bot.command('report', async (ctx) => {
     });
 
     let msg = `📊 *IELTS Zone Executive Report*\n━━━━━━━━━━━━━━━\n`;
-    msg += `💰 *Total Paid:* ${grandTotal.toLocaleString()} UZS\n\n`;
+    msg += `💰 *Total Paid:* ${grandTotal.toLocaleString('en-US')} UZS\n\n`;
     
     msg += `🏢 *By Branch:*\n`;
     branches.forEach(b => {
       const amt = branchTotals[b] || 0;
-      msg += `• ${b}: ${amt.toLocaleString()} UZS\n`;
+      msg += `• ${b}: ${amt.toLocaleString('en-US')} UZS\n`;
     });
 
     msg += `\n💳 *By Payment Type:*\n`;
-    msg += `• Karta: ${typeTotals['Karta'].toLocaleString()} UZS\n`;
-    msg += `• Naqd: ${typeTotals['Naqd'].toLocaleString()} UZS\n`;
-    msg += `• MCHJ: ${typeTotals['MCHJ'].toLocaleString()} UZS\n`;
+    msg += `• Karta: ${typeTotals['Karta'].toLocaleString('en-US')} UZS\n`;
+    msg += `• Naqd: ${typeTotals['Naqd'].toLocaleString('en-US')} UZS\n`;
+    msg += `• MCHJ: ${typeTotals['MCHJ'].toLocaleString('en-US')} UZS\n`;
     msg += `━━━━━━━━━━━━━━━`;
 
     ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -78,7 +76,6 @@ bot.command('report', async (ctx) => {
 // --- CHEQUE REPLY HANDLER (MULTI-PHOTO SUPPORT) ---
 bot.on('photo', async (ctx) => {
   const reply = ctx.message.reply_to_message;
-  // Check if staff is replying to an approval message with an ID
   if (reply && reply.text && reply.text.includes('ID:')) {
     const rowNum = reply.text.split('ID:')[1].trim();
     try {
@@ -93,9 +90,11 @@ bot.on('photo', async (ctx) => {
         ctx.reply('✅ Cheque received! Status updated to PAID.');
       }
       
-      // Forward the photo to the Manager
+      // Format amount for manager's photo caption
+      const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
+
       await bot.telegram.sendPhoto(MANAGER_ID, ctx.message.photo[0].file_id, {
-        caption: `📸 New Cheque (ID: ${rowNum})\n📍 Branch: ${row.get('Branch')}\n💵 Amount: ${row.get('Amount')} UZS\n📝 Desc: ${row.get('Description')}`
+        caption: `📸 New Cheque (ID: ${rowNum})\n📍 Branch: ${row.get('Branch')}\n💵 Amount: ${formattedAmount} UZS\n📝 Desc: ${row.get('Description')}`
       });
     } catch (e) { 
       console.error(e); 
@@ -113,7 +112,6 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
 
-  // Global Cancel
   if (text === '❌ Cancel') {
     userSessions[userId] = { step: 'BRANCH' };
     return ctx.reply('Bekor qilindi. Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
@@ -122,7 +120,6 @@ bot.on('text', async (ctx) => {
   const session = userSessions[userId];
   if (!session) return;
 
-  // 1. BRANCH
   if (session.step === 'BRANCH') {
     if (branches.includes(text)) {
       session.branch = text;
@@ -131,30 +128,27 @@ bot.on('text', async (ctx) => {
     }
   }
   
-  // 2. CATEGORY
   if (session.step === 'CATEGORY') {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply('Summani kiriting (Faqat raqam):', Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply('Summani kiriting (Masalan: 100000 yoku 100,000):', Markup.keyboard(['❌ Cancel']).resize());
     }
   }
   
-  // 3. AMOUNT
   if (session.step === 'AMOUNT') {
+    // This strips everything except numbers (100,000 becomes 100000)
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
     return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
   }
   
-  // 4. DESCRIPTION
   if (session.step === 'DESCRIPTION') {
     session.description = text;
     session.step = 'PAY_TYPE';
     return ctx.reply('To\'lov turi qanday bo\'ladi?', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Cancel']).resize());
   }
   
-  // 5. PAYMENT TYPE
   if (session.step === 'PAY_TYPE') {
     session.payType = text;
     if (text === 'Naqd') {
@@ -165,7 +159,6 @@ bot.on('text', async (ctx) => {
     return ctx.reply(text === 'Karta' ? 'Karta raqamini kiriting:' : 'Firma nomini kiriting:');
   }
   
-  // 6. PAYMENT DETAIL
   if (session.step === 'PAY_DETAIL') {
     session.payDetail = text;
     return submitToManager(ctx, session);
@@ -178,6 +171,8 @@ async function submitToManager(ctx, session) {
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
+    
+    // Save raw number to sheet for math formulas
     const row = await sheet.addRow({
       'Timestamp': new Date().toLocaleString(),
       'Branch': session.branch,
@@ -190,8 +185,11 @@ async function submitToManager(ctx, session) {
       '_StaffChatId': userId
     });
 
+    // Format number nicely for the Telegram message
+    const formattedAmount = Number(session.amount).toLocaleString('en-US');
+
     await bot.telegram.sendMessage(MANAGER_ID, 
-      `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${session.amount} UZS\n💳 To'lov: ${session.payType}\n📝 Detal: ${session.payDetail}\n💬 Sabab: ${session.description}`, 
+      `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${formattedAmount} UZS\n💳 To'lov: ${session.payType}\n📝 Detal: ${session.payDetail}\n💬 Sabab: ${session.description}`, 
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
@@ -220,8 +218,10 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const row = rows.find(r => r.rowNumber == rowNum);
     const staffId = row.get('_StaffChatId');
     
-    // Send message to staff prompting for reply
-    await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi!\nSumma: ${row.get('Amount')} UZS.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
+    // Format amount for the staff approval message
+    const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
+    
+    await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi!\nSumma: ${formattedAmount} UZS.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
     
     ctx.editMessageText(`💸 Tasdiqlandi. Filial rahbaridan chek kutilmoqda...`);
   } else {
@@ -231,6 +231,5 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
 
 bot.launch();
 
-// Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
