@@ -7,7 +7,6 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
 
-// Google Sheets Authentication
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
 const auth = new JWT({
   email: creds.client_email,
@@ -40,25 +39,28 @@ function getTodayStr() {
   return new Date(new Date().getTime() + (5 * 60 * 60 * 1000)).toISOString().split('T')[0];
 }
 
-// --- BUDGET ENGINE ---
+// --- BUDGET ENGINE (Enhanced with Month/Year filtering) ---
 async function getBudgetWarning(branch, amountStr) {
   try {
+    await doc.loadInfo();
     const budgetSheet = doc.sheetsByTitle['Budgets'];
     if (!budgetSheet) return ''; 
     const budgetRows = await budgetSheet.getRows();
     const branchBudgetRow = budgetRows.find(r => r.get('Branch') === branch);
     if (!branchBudgetRow) return '';
     
-    const limit = parseInt(branchBudgetRow.get('Monthly Limit').replace(/[^0-9]/g, '')) || 0;
+    const limit = parseInt(branchBudgetRow.get('Monthly Limit').toString().replace(/[^0-9]/g, '')) || 0;
     const expenseSheet = doc.sheetsByTitle['Pending_Expenses'];
     const expenseRows = await expenseSheet.getRows();
     
-    const currentMonth = new Date().getMonth();
-    const currentYear = new Date().getFullYear();
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
     let spent = 0;
     
     expenseRows.forEach(r => {
       const status = r.get('Status');
+      // Calculate only for the current month and year
       if (r.get('Branch') === branch && (status === 'PAID' || status === 'SCHEDULED' || status === 'CHEQUE_SENT')) {
         const rowDate = new Date(r.get('Timestamp'));
         if (rowDate.getMonth() === currentMonth && rowDate.getFullYear() === currentYear) {
@@ -71,14 +73,13 @@ async function getBudgetWarning(branch, amountStr) {
     if (spent + requested > limit) {
        return `\n\n⚠️ *BUDJETDAN OSHISH XAVFI!*\n📉 Oylik Budjet: ${limit.toLocaleString('en-US')} UZS\n💸 Ishlatildi/Rejada: ${spent.toLocaleString('en-US')} UZS\n📊 So'rov qabul qilinsa: ${(spent + requested).toLocaleString('en-US')} UZS`;
     } else {
-       return `\n\n✅ *Budjet holati (Zaxira bor):*\n📉 Limit: ${limit.toLocaleString('en-US')}\n💸 Ishlatildi: ${spent.toLocaleString('en-US')}\n📦 Qoldiq: ${(limit - spent - requested).toLocaleString('en-US')}`;
+       return `\n\n✅ *Budjet holati:*\n📦 Qoldiq: ${(limit - spent - requested).toLocaleString('en-US')} UZS`;
     }
-  } catch(e) { return ''; }
+  } catch(e) { console.error(e); return ''; }
 }
 
-
 // ==========================================
-// 1. MANAGER CONTROL PANEL (Persistent Buttons)
+// 1. MANAGER CONTROL PANEL
 // ==========================================
 bot.command('admin', (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
@@ -157,7 +158,7 @@ bot.hears('💸 Cashflow', async (ctx) => {
     const rows = await sheet.getRows();
     const scheduled = rows.filter(r => r.get('Status') === 'SCHEDULED');
     
-    if (scheduled.length === 0) return ctx.reply("✅ Kelajakdagi to'lovlar yo'q (Keshflou toza).");
+    if (scheduled.length === 0) return ctx.reply("✅ Kelajakdagi to'lovlar yo'q.");
     
     let dates = {};
     let total = 0;
@@ -169,19 +170,15 @@ bot.hears('💸 Cashflow', async (ctx) => {
     });
 
     const sortedDates = Object.keys(dates).sort();
-    
-    let msg = `💸 *KESHFLOU FORECAST (Pul oqimi)*\n━━━━━━━━━━━━━━━\n`;
-    sortedDates.forEach(d => {
-      msg += `🗓 *${d}* ➔ ${dates[d].toLocaleString('en-US')} UZS\n`;
-    });
-    msg += `━━━━━━━━━━━━━━━\n💰 *Jami Rejalashtirilgan:* ${total.toLocaleString('en-US')} UZS`;
+    let msg = `💸 *CASHFLOW FORECAST*\n━━━━━━━━━━━━━━━\n`;
+    sortedDates.forEach(d => { msg += `🗓 *${d}* ➔ ${dates[d].toLocaleString('en-US')} UZS\n`; });
+    msg += `━━━━━━━━━━━━━━━\n💰 Jami: ${total.toLocaleString('en-US')} UZS`;
     ctx.reply(msg, { parse_mode: 'Markdown' });
   } catch (e) { ctx.reply('❌ Xatolik.'); }
 });
 
-
 // ==========================================
-// 2. DAILY REMINDERS (CRON JOB)
+// 2. DAILY REMINDERS
 // ==========================================
 cron.schedule('0 9 * * *', async () => {
   try {
@@ -189,7 +186,6 @@ cron.schedule('0 9 * * *', async () => {
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const todayStr = getTodayStr();
-
     const dueToday = rows.filter(r => r.get('Status') === 'SCHEDULED' && r.get('Scheduled Date') === todayStr);
 
     for (let row of dueToday) {
@@ -197,50 +193,40 @@ cron.schedule('0 9 * * *', async () => {
       const payType = row.get('Payment Type') || "Noma'lum";
       const payDetail = row.get('Payment Detail') || "N/A";
       
-      await bot.telegram.sendMessage(MANAGER_ID, `⏰ *ESLATMA: Bugun to'lov qilinishi kerak!*\n\n📍 ${row.get('Branch')}\n💵 ${formattedAmount} UZS\n💳 To'lov: ${payType} (${payDetail})\n📝 ${row.get('Description')}\n\n*To'lovni amalga oshirgach, chek rasmini ushbu xabarga REPLY qilib yuboring.*\nID: ${row.rowNumber}`, { parse_mode: 'Markdown' });
+      await bot.telegram.sendMessage(MANAGER_ID, `⏰ *ESLATMA: Bugun to'lov qilinishi kerak!*\n\n📍 ${row.get('Branch')}\n💵 ${formattedAmount} UZS\n💳 ${payType} (${payDetail})\n📝 ${row.get('Description')}\n\n*To'lovni amalga oshirgach, chek rasmini REPLY qilib yuboring.*\nID: ${row.rowNumber}`, { parse_mode: 'Markdown' });
     }
   } catch (e) { console.error("Cron Error:", e); }
 }, { scheduled: true, timezone: "Asia/Tashkent" });
 
-
 // ==========================================
-// 3. THE REVERSED CHEQUE FLOW 
-// (Manager Uploads -> Staff Confirms)
+// 3. REVERSED CHEQUE FLOW
 // ==========================================
 bot.on('photo', async (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
-
   const reply = ctx.message.reply_to_message;
   if (reply && reply.text && reply.text.includes('ID:')) {
     const rowNum = reply.text.split('ID:')[1].trim();
     try {
       await doc.loadInfo();
-      const sheet = doc.sheetsByTitle['Pending_Expenses'];
-      const rows = await sheet.getRows();
+      const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
       const row = rows.find(r => r.rowNumber == rowNum);
       
       row.set('Status', 'CHEQUE_SENT'); 
       await row.save();
-      
       ctx.reply('✅ Chek xodimga tasdiqlash uchun yuborildi!');
       
       const staffId = row.get('_StaffChatId');
-      const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
-
       await bot.telegram.sendPhoto(staffId, ctx.message.photo[0].file_id, {
-        caption: `💰 *TO'LOV QILINDI!*\nProcurement Manager sizning so'rovingizni to'ladi.\n\n💵 Summa: ${formattedAmount} UZS\n📝 Sabab: ${row.get('Description')}\n\nIltimos, pulni qabul qilganingizni tasdiqlang:`,
+        caption: `💰 *TO'LOV QILINDI!*\nProcurement Manager pulni o'tkazdi.\n\n💵 Summa: ${Number(row.get('Amount')).toLocaleString('en-US')} UZS\n\nIltimos, pulni olganingizni tasdiqlang:`,
         parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Pulni qabul qildim (Tasdiqlash)', `staffconfirm_${rowNum}`)]
-        ])
+        ...Markup.inlineKeyboard([[Markup.button.callback('✅ Qabul qildim', `staffconfirm_${rowNum}`)]])
       });
     } catch (e) { console.error(e); }
   }
 });
 
-
 // ==========================================
-// 4. NEW REQUEST WORKFLOW (Staff Side)
+// 4. REQUEST WORKFLOW
 // ==========================================
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
@@ -250,106 +236,62 @@ bot.command(['start', 'new'], (ctx) => {
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
-
   if (text.includes('Hisobot') || text.includes('Kutilayotgan') || text.includes('Cashflow')) return;
-
   if (text === '❌ Bekor qilish (Cancel)' || text === '/start') {
     userSessions[userId] = { step: 'BRANCH' };
-    return ctx.reply('Bekor qilindi. Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
+    return ctx.reply('Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
-
   const session = userSessions[userId];
   if (!session) return;
 
   if (session.step === 'BRANCH') {
-    if (branches.includes(text)) {
-      session.branch = text;
-      session.step = 'CATEGORY';
-      return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Bekor qilish (Cancel)'], { columns: 2 }).resize());
-    }
+    if (branches.includes(text)) { session.branch = text; session.step = 'CATEGORY'; return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Bekor qilish (Cancel)'], { columns: 2 }).resize()); }
   }
   if (session.step === 'CATEGORY') {
-    if (categories.includes(text)) {
-      session.category = text;
-      session.step = 'AMOUNT';
-      return ctx.reply('Summani kiriting (Masalan: 100 000 yoki 100,000):', Markup.keyboard(['❌ Bekor qilish (Cancel)']).resize());
-    }
+    if (categories.includes(text)) { session.category = text; session.step = 'AMOUNT'; return ctx.reply('Summani kiriting:', Markup.keyboard(['❌ Bekor qilish (Cancel)']).resize()); }
   }
   if (session.step === 'AMOUNT') {
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
-    return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
+    return ctx.reply('Xarajat tavsifi (Description):');
   }
   if (session.step === 'DESCRIPTION') {
     session.description = text;
     session.step = 'PRIORITY';
-    return ctx.reply('Xarajat muhimligi qanday? (Qachon to\'lanishi kerak?)', Markup.keyboard([...priorities, '❌ Bekor qilish (Cancel)'], { columns: 1 }).resize());
+    return ctx.reply('Muhimligi?', Markup.keyboard([...priorities, '❌ Bekor qilish (Cancel)'], { columns: 1 }).resize());
   }
   if (session.step === 'PRIORITY') {
-    if (priorities.includes(text)) {
-      session.priority = text;
-      session.step = 'PAY_TYPE';
-      return ctx.reply('To\'lov turi qanday bo\'ladi?', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Bekor qilish (Cancel)']).resize());
-    }
+    if (priorities.includes(text)) { session.priority = text; session.step = 'PAY_TYPE'; return ctx.reply('To\'lov turi?', Markup.keyboard(['Karta', 'Naqd', 'MCHJ hisobi', '❌ Bekor qilish (Cancel)']).resize()); }
   }
   if (session.step === 'PAY_TYPE') {
     session.payType = text;
-    if (text === 'Naqd') {
-        session.payDetail = 'N/A';
-        session.step = 'CONFIRM';
-        return askConfirmation(ctx, session);
-    }
+    if (text === 'Naqd') { session.payDetail = 'N/A'; return askConfirmation(ctx, session); }
     session.step = 'PAY_DETAIL';
-    return ctx.reply(text === 'Karta' ? 'Karta raqamini kiriting:' : 'Firma nomini kiriting:');
+    return ctx.reply(text === 'Karta' ? 'Karta raqami:' : 'Firma nomi:');
   }
   if (session.step === 'PAY_DETAIL') {
     session.payDetail = text;
-    session.step = 'CONFIRM';
     return askConfirmation(ctx, session);
   }
 });
 
 function askConfirmation(ctx, session) {
   const formattedAmount = Number(session.amount).toLocaleString('en-US');
-  let msg = `⚠️ *Menejerga yuborishdan oldin tekshiring:*\n\n`;
-  msg += `📍 Filial: ${session.branch}\n`;
-  msg += `📂 Kategoriya: ${session.category}\n`;
-  msg += `💰 Summa: ${formattedAmount} UZS\n`;
-  msg += `📝 Sabab: ${session.description}\n`;
-  msg += `⏰ Muhimligi: ${session.priority}\n`;
-  msg += `💳 To'lov: ${session.payType} (${session.payDetail})`;
-  
-  ctx.reply(msg, {
-    parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('✅ Yuborish (Submit)', 'submit_final')],
-      [Markup.button.callback('❌ Boshidan boshlash', 'cancel_final')]
-    ])
-  });
+  let msg = `⚠️ *Tekshiring:*\n\n📍 Filial: ${session.branch}\n💰 Summa: ${formattedAmount} UZS\n📝 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}\n💳 To'lov: ${session.payType} (${session.payDetail})`;
+  ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('✅ Yuborish', 'submit_final')], [Markup.button.callback('❌ Bekor qilish', 'cancel_final')]]) });
 }
 
-
 // ==========================================
-// 5. INLINE BUTTON HANDLERS 
-// (Submission, Approval, Confirmation)
+// 5. CALLBACK HANDLERS
 // ==========================================
 bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
   const action = ctx.match[1];
   const userId = ctx.from.id.toString();
   const session = userSessions[userId];
-  
-  if (action === 'cancel_final') {
-    userSessions[userId] = { step: 'BRANCH' };
-    await ctx.editMessageText('❌ So\'rov bekor qilindi.');
-    return ctx.reply('Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
-  }
-  
   if (action === 'submit_final' && session) {
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
-      const formattedAmount = Number(session.amount).toLocaleString('en-US');
-      
       const row = await sheet.addRow({
         'Timestamp': new Date().toLocaleString(),
         'Branch': session.branch,
@@ -360,113 +302,70 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Description': `[${session.category}] ${session.description}`,
         'Status': 'PENDING',
         '_StaffChatId': userId,
-        'Scheduled Date': '',
         'Priority': session.priority
       });
 
       const budgetWarning = await getBudgetWarning(session.branch, session.amount);
-
-      await bot.telegram.sendMessage(MANAGER_ID, 
-        `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${formattedAmount} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority} ${budgetWarning}`, 
-        {
+      await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n⏰ Muhimligi: ${session.priority}${budgetWarning}`, {
           parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Tasdiqlash (Qaror)', `decide_${row.rowNumber}`)], 
-            [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]
-          ])
-        }
-      );
-
+          ...Markup.inlineKeyboard([[Markup.button.callback('✅ Tasdiqlash', `decide_${row.rowNumber}`)], [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]])
+      });
       userSessions[userId] = { step: 'BRANCH' };
-      await ctx.editMessageText(`✅ So'rov muvaffaqiyatli yuborildi!\nID: ${row.rowNumber}`);
-      ctx.reply('Yangi so\'rov yaratish uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
-    } catch (e) { 
-      ctx.reply('❌ Xatolik yuz berdi. Google Sheet ustunlarini tekshiring.'); 
-      console.error(e); 
-    }
-  }
+      ctx.editMessageText('✅ Yuborildi!');
+      ctx.reply('Yangi so\'rov uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
+    } catch (e) { console.error(e); }
+  } else { ctx.editMessageText('❌ Bekor qilindi.'); }
 });
 
-// STAFF CONFIRMATION BUTTON
 bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
   const rowNum = ctx.match[1];
   try {
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-    const rows = await sheet.getRows();
+    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
     const row = rows.find(r => r.rowNumber == rowNum);
-    
-    row.set('Status', 'PAID');
-    await row.save();
-    
-    await ctx.editMessageCaption('✅ *PUL QABUL QILINDI VA YOPILDI.*', { parse_mode: 'Markdown' });
-    
-    await bot.telegram.sendMessage(MANAGER_ID, `✅ Xodim ${row.get('Amount')} UZS miqdoridagi pulni olganini tasdiqladi.\n(ID: ${rowNum} - Status: PAID)`);
+    row.set('Status', 'PAID'); await row.save();
+    ctx.editMessageCaption('✅ Pul olindi!');
+    await bot.telegram.sendMessage(MANAGER_ID, `✅ ID: ${rowNum} yopildi (PAID).`);
   } catch(e) { console.error(e); }
 });
 
-// MANAGER SCHEDULING BUTTONS
 bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async (ctx) => {
-  const action = ctx.match[1];
-  const rowNum = ctx.match[2];
-  const schedParam = ctx.match[3]; 
-
+  const [action, rowNum, param] = [ctx.match[1], ctx.match[2], ctx.match[3]];
   try {
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-    const rows = await sheet.getRows();
+    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
     const row = rows.find(r => r.rowNumber == rowNum);
-    if (!row) return ctx.reply("❌ Xatolik: Qator topilmadi.");
-
     const staffId = row.get('_StaffChatId');
-    const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
 
     if (action === 'decide') {
-      await ctx.editMessageText(`💸 So'rov ko'rib chiqilmoqda. Qachon to'laysiz?`, {
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Hozir To\'lash (Chek yuborish)', `paynow_${rowNum}`)],
-          [Markup.button.callback('🗓 Dushanba', `schedD_${rowNum}_1`), Markup.button.callback('🗓 Seshanba', `schedD_${rowNum}_2`)],
-          [Markup.button.callback('🗓 Chorshanba', `schedD_${rowNum}_3`), Markup.button.callback('🗓 Payshanba', `schedD_${rowNum}_4`)],
-          [Markup.button.callback('🗓 Juma', `schedD_${rowNum}_5`)],
-          [Markup.button.callback('⏳ 15 kun', `schedF_${rowNum}_15`), Markup.button.callback('📅 1 oy', `schedM_${rowNum}`)]
-        ])
-      });
-    } 
-    
-    else if (action === 'paynow') {
-      row.set('Status', 'SCHEDULED');
-      row.set('Scheduled Date', getTodayStr());
-      await row.save();
-      await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi! Procurement Manager pulni o'tkazmoqda.`);
-      await ctx.editMessageText(`💸 *Hozir to'lash tanlandi.*\nTo'lovni amalga oshirgach, **ushbu xabarga CHEK RASMINI REPLY qilib yuboring**.\nID: ${rowNum}`, { parse_mode: 'Markdown' });
-    } 
-    
-    else if (action.startsWith('sched')) {
-      let targetDate = '';
-      if (action === 'schedD') targetDate = getScheduledDateStr('D', parseInt(schedParam));
-      else if (action === 'schedF') targetDate = getScheduledDateStr('F', parseInt(schedParam));
-      else if (action === 'schedM') targetDate = getScheduledDateStr('M', 0);
-      
-      row.set('Status', 'SCHEDULED');
-      row.set('Scheduled Date', targetDate);
-      await row.save();
-
-      await bot.telegram.sendMessage(staffId, `⏳ *To'lov Rejalashtirildi!*\nSizning ${formattedAmount} UZS so'rovingiz tasdiqlandi.\nTo'lov sanasi: *${targetDate}*`, { parse_mode: 'Markdown' });
-      await ctx.editMessageText(`🗓 To'lov ${targetDate} sanasiga rejalashtirildi. Xodim ogohlantirildi.`);
-    } 
-    
-    else if (action === 'rej') {
-      row.set('Status', 'REJECTED');
-      await row.save();
-      await bot.telegram.sendMessage(staffId, `❌ Sizning ${formattedAmount} UZS so'rovingiz rad etildi.`);
-      await ctx.editMessageText('❌ So\'rov rad etildi va yopildi.');
+      return ctx.editMessageText(`💸 Qachon to'laysiz?`, Markup.inlineKeyboard([
+        [Markup.button.callback('✅ Hozir', `paynow_${rowNum}`)],
+        [Markup.button.callback('🗓 Dushanba', `schedD_${rowNum}_1`), Markup.button.callback('🗓 Seshanba', `schedD_${rowNum}_2`)],
+        [Markup.button.callback('🗓 Chorshanba', `schedD_${rowNum}_3`), Markup.button.callback('🗓 Payshanba', `schedD_${rowNum}_4`)],
+        [Markup.button.callback('🗓 Juma', `schedD_${rowNum}_5`)],
+        [Markup.button.callback('⏳ 15 kun', `schedF_${rowNum}_15`), Markup.button.callback('📅 1 oy', `schedM_${rowNum}`)]
+      ]));
     }
-  } catch (e) {
-    console.error(e);
-    ctx.reply("❌ Amalni bajarishda xatolik yuz berdi.");
-  }
+    if (action === 'paynow') {
+      row.set('Status', 'SCHEDULED'); row.set('Scheduled Date', getTodayStr()); await row.save();
+      await bot.telegram.sendMessage(staffId, `✅ Tasdiqlandi! Procurement Manager pulni o'tkazmoqda.`);
+      return ctx.editMessageText(`✅ Hozir to'lash tanlandi. ID: ${rowNum}`);
+    }
+    if (action.startsWith('sched')) {
+      let targetDate = '';
+      if (action === 'schedD') targetDate = getScheduledDateStr('D', parseInt(param));
+      else if (action === 'schedF') targetDate = getScheduledDateStr('F', parseInt(param));
+      else if (action === 'schedM') targetDate = getScheduledDateStr('M', 0);
+      row.set('Status', 'SCHEDULED'); row.set('Scheduled Date', targetDate); await row.save();
+      await bot.telegram.sendMessage(staffId, `⏳ Tasdiqlandi. To'lov sanasi: ${targetDate}`);
+      return ctx.editMessageText(`🗓 ${targetDate} sanasiga rejalashtirildi.`);
+    }
+    if (action === 'rej') {
+      row.set('Status', 'REJECTED'); await row.save();
+      await bot.telegram.sendMessage(staffId, `❌ Rad etildi.`);
+      return ctx.editMessageText('❌ Rad etildi.');
+    }
+  } catch (e) { console.error(e); }
 });
 
 bot.launch();
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
