@@ -137,7 +137,6 @@ bot.on('text', async (ctx) => {
   }
   
   if (session.step === 'AMOUNT') {
-    // This strips everything except numbers (100,000 becomes 100000)
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
     return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
@@ -172,7 +171,6 @@ async function submitToManager(ctx, session) {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     
-    // Save raw number to sheet for math formulas
     const row = await sheet.addRow({
       'Timestamp': new Date().toLocaleString(),
       'Branch': session.branch,
@@ -185,7 +183,6 @@ async function submitToManager(ctx, session) {
       '_StaffChatId': userId
     });
 
-    // Format number nicely for the Telegram message
     const formattedAmount = Number(session.amount).toLocaleString('en-US');
 
     await bot.telegram.sendMessage(MANAGER_ID, 
@@ -200,7 +197,8 @@ async function submitToManager(ctx, session) {
     );
 
     delete userSessions[userId];
-    ctx.reply('✅ Menejerga tasdiqlash uchun yuborildi!');
+    // THIS LINE FIXES THE KEYBOARD BUG
+    ctx.reply('✅ Tasdiqlash uchun yuborildi!\n\nYangi so\'rov yaratish uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   } catch (e) { 
     ctx.reply('❌ Xatolik yuz berdi. Iltimos qayta urining.'); 
     console.error(e); 
@@ -218,12 +216,13 @@ bot.action(/^(app|rej)_(.+)$/, async (ctx) => {
     const row = rows.find(r => r.rowNumber == rowNum);
     const staffId = row.get('_StaffChatId');
     
-    // Format amount for the staff approval message
     const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
     
+    // Sends the instruction back to the person who requested it
     await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi!\nSumma: ${formattedAmount} UZS.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
     
-    ctx.editMessageText(`💸 Tasdiqlandi. Filial rahbaridan chek kutilmoqda...`);
+    // Updates your manager view with the correct title
+    ctx.editMessageText(`💸 Tasdiqlandi. Procurement Managerdan chek kutilmoqda...`);
   } else {
     ctx.editMessageText('❌ So\'rov rad etildi.');
   }
