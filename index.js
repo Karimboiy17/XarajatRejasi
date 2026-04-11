@@ -1,12 +1,13 @@
 const { Telegraf, Markup } = require('telegraf');
 const { JWT } = require('google-auth-library');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
-const cron = require('node-cron'); // NEW: For daily reminders
+const cron = require('node-cron');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
 
+// Google Sheets Authentication
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
 const auth = new JWT({
   email: creds.client_email,
@@ -17,15 +18,38 @@ const auth = new JWT({
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
 
+// --- SYSTEM CONSTANTS ---
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
 const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
 
-// --- HELPER: GET FORMATTED DATE ---
-function getTargetDate(daysToAdd) {
-  const date = new Date();
-  date.setDate(date.getDate() + daysToAdd);
-  // Format as YYYY-MM-DD for easy searching
-  return date.toISOString().split('T')[0]; 
+// --- DATE CALCULATION ENGINE (Tashkent Timezone Safe) ---
+function getScheduledDateStr(type, param) {
+  const now = new Date();
+  // Adjust to Tashkent time (UTC+5) roughly
+  const tashkentTime = new Date(now.getTime() + (5 * 60 * 60 * 1000));
+
+  if (type === 'D') { 
+    // D = Specific Day of Week (1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri)
+    const currentDay = tashkentTime.getUTCDay(); // 0 is Sun, 6 is Sat
+    let distance = param - currentDay;
+    if (distance <= 0) distance += 7; // If day passed or is today, jump to next week
+    tashkentTime.setUTCDate(tashkentTime.getUTCDate() + distance);
+  } else if (type === 'F') { 
+    // F = Future Days (e.g., 15 days)
+    tashkentTime.setUTCDate(tashkentTime.getUTCDate() + param);
+  } else if (type === 'M') { 
+    // M = 1 Month later
+    tashkentTime.setUTCMonth(tashkentTime.getUTCMonth() + 1);
+  }
+  
+  // Return format YYYY-MM-DD
+  return tashkentTime.toISOString().split('T')[0];
+}
+
+function getTodayStr() {
+  const now = new Date();
+  const tashkentTime = new Date(now.getTime() + (5 * 60 * 60 * 1000));
+  return tashkentTime.toISOString().split('T')[0];
 }
 
 // ==========================================
@@ -36,7 +60,7 @@ cron.schedule('0 9 * * *', async () => {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
-    const todayStr = getTargetDate(0);
+    const todayStr = getTodayStr();
 
     const dueToday = rows.filter(r => r.get('Status') === 'SCHEDULED' && r.get('Scheduled Date') === todayStr);
 
@@ -45,19 +69,14 @@ cron.schedule('0 9 * * *', async () => {
       const staffId = row.get('_StaffChatId');
       const rowNum = row.rowNumber;
 
-      // Notify Procurement Manager
+      // Notify Manager
       await bot.telegram.sendMessage(MANAGER_ID, `⏰ *ESLATMA: Bugun to'lov qilinishi kerak!*\n\n📍 ${row.get('Branch')}\n💵 ${formattedAmount} UZS\n📝 ${row.get('Description')}\n👤 Xodim: ${row.get('Staff Name')}`, { parse_mode: 'Markdown' });
-
-      // Notify Staff to send Cheque
-      await bot.telegram.sendMessage(staffId, `⏰ *ESLATMA: To'lov kuni keldi!*\nSizning ${formattedAmount} UZS so'rovingiz bugun to'lanishi rejalashtirilgan.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
       
-      // We leave status as SCHEDULED until they actually send the photo (then it becomes PAID)
+      // Notify Staff to send cheque
+      await bot.telegram.sendMessage(staffId, `⏰ *ESLATMA: To'lov kuni keldi!*\nSizning ${formattedAmount} UZS so'rovingiz bugun to'lanishi rejalashtirilgan.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
     }
   } catch (e) { console.error("Cron Error:", e); }
-}, {
-  scheduled: true,
-  timezone: "Asia/Tashkent"
-});
+}, { scheduled: true, timezone: "Asia/Tashkent" });
 
 
 // ==========================================
@@ -71,7 +90,6 @@ bot.command('waiting', async (ctx) => {
     const rows = await sheet.getRows();
     
     const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED');
-    
     if (waiting.length === 0) return ctx.reply("✅ Hozirda kutilayotgan (Scheduled) to'lovlar yo'q.");
 
     let msg = `⏳ *Kutilayotgan To'lovlar (Waiting Expenses)*\n━━━━━━━━━━━━━━━\n`;
@@ -85,11 +103,10 @@ bot.command('waiting', async (ctx) => {
 
     msg += `━━━━━━━━━━━━━━━\n💰 *Jami Kutilayotgan:* ${totalWait.toLocaleString('en-US')} UZS`;
     ctx.reply(msg, { parse_mode: 'Markdown' });
-  } catch (e) { ctx.reply('❌ Error fetching waiting list.'); }
+  } catch (e) { ctx.reply('❌ Xatolik yuz berdi.'); }
 });
 
 bot.command('report', async (ctx) => {
-  // ... [YOUR EXACT EXISTING REPORT CODE REMAINS HERE] ...
   if (ctx.from.id.toString() !== MANAGER_ID) return;
   try {
     await doc.loadInfo();
@@ -118,7 +135,7 @@ bot.command('report', async (ctx) => {
     branches.forEach(b => { msg += `• ${b}: ${(branchTotals[b] || 0).toLocaleString('en-US')} UZS\n`; });
     msg += `\n💳 *By Payment Type:*\n• Karta: ${typeTotals['Karta'].toLocaleString('en-US')} UZS\n• Naqd: ${typeTotals['Naqd'].toLocaleString('en-US')} UZS\n• MCHJ: ${typeTotals['MCHJ'].toLocaleString('en-US')} UZS\n━━━━━━━━━━━━━━━`;
     ctx.reply(msg, { parse_mode: 'Markdown' });
-  } catch (e) { console.error(e); ctx.reply('❌ Report crashed.'); }
+  } catch (e) { ctx.reply('❌ Report crashed.'); }
 });
 
 
@@ -136,7 +153,7 @@ bot.on('photo', async (ctx) => {
       const row = rows.find(r => r.rowNumber == rowNum);
       
       if (row.get('Status') !== 'PAID') {
-        row.set('Status', 'PAID'); // Changes from PENDING or SCHEDULED to PAID
+        row.set('Status', 'PAID'); 
         await row.save();
         ctx.reply('✅ Cheque received! Status updated to PAID.');
       }
@@ -162,7 +179,8 @@ bot.on('text', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text;
 
-  if (text === '❌ Cancel') {
+  // Safe Cancel Reset
+  if (text === '❌ Cancel' || text === '/start') {
     userSessions[userId] = { step: 'BRANCH' };
     return ctx.reply('Bekor qilindi. Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
@@ -181,10 +199,11 @@ bot.on('text', async (ctx) => {
     if (categories.includes(text)) {
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply('Summani kiriting (Masalan: 100000):', Markup.keyboard(['❌ Cancel']).resize());
+      return ctx.reply('Summani kiriting (Masalan: 100 000 yoku 100,000):', Markup.keyboard(['❌ Cancel']).resize());
     }
   }
   if (session.step === 'AMOUNT') {
+    // Strips all letters, spaces, dots, commas automatically
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
     return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
@@ -225,7 +244,7 @@ async function submitToManager(ctx, session) {
       'Description': `[${session.category}] ${session.description}`,
       'Status': 'PENDING',
       '_StaffChatId': userId,
-      'Scheduled Date': '' // Empty by default
+      'Scheduled Date': '' 
     });
 
     const formattedAmount = Number(session.amount).toLocaleString('en-US');
@@ -235,72 +254,81 @@ async function submitToManager(ctx, session) {
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Tasdiqlash (Qaror qabul qilish)', `decide_${row.rowNumber}`)], 
+          [Markup.button.callback('✅ Tasdiqlash (Qaror)', `decide_${row.rowNumber}`)], 
           [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]
         ])
       }
     );
 
     delete userSessions[userId];
+    // Keyboard correctly resets back to branches list
     ctx.reply('✅ Procurement Managerga tasdiqlash uchun yuborildi!\n\nYangi so\'rov yaratish uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   } catch (e) { 
-    ctx.reply('❌ Xatolik yuz berdi.'); 
+    ctx.reply('❌ Xatolik yuz berdi. Google Sheet-ni tekshiring.'); 
     console.error(e); 
   }
 }
 
 // ==========================================
-// 5. MANAGER APPROVAL & SCHEDULING LOGIC
+// 5. ADVANCED SCHEDULING & APPROVAL LOGIC
 // ==========================================
-bot.action(/^(decide|paynow|sched|rej)_(.+)(?:_(.+))?$/, async (ctx) => {
+// Rock-solid Regex to capture exactly the button clicked
+bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async (ctx) => {
   const action = ctx.match[1];
   const rowNum = ctx.match[2];
-  const schedDays = ctx.match[3]; // Used for scheduling dates
+  const schedParam = ctx.match[3]; // Represents the day of week OR number of days
 
   try {
     await doc.loadInfo();
     const sheet = doc.sheetsByTitle['Pending_Expenses'];
     const rows = await sheet.getRows();
     const row = rows.find(r => r.rowNumber == rowNum);
+
+    if (!row) return ctx.reply("❌ Xatolik: Qator Google Sheet-da topilmadi.");
+
     const staffId = row.get('_StaffChatId');
     const formattedAmount = Number(row.get('Amount')).toLocaleString('en-US');
 
-    // STEP 1: Manager clicked "Approve" -> Ask When
+    // --- DECISION MENU ---
     if (action === 'decide') {
       await ctx.editMessageText(`💸 So'rov ko'rib chiqilmoqda. Qachon to'laysiz?`, {
         ...Markup.inlineKeyboard([
           [Markup.button.callback('✅ Hozir (Rasmni so\'rash)', `paynow_${rowNum}`)],
-          [
-            Markup.button.callback('🗓 Ertaga', `sched_${rowNum}_1`),
-            Markup.button.callback('🗓 3 kun', `sched_${rowNum}_3`),
-            Markup.button.callback('🗓 1 hafta', `sched_${rowNum}_7`)
-          ]
+          [Markup.button.callback('🗓 Dushanba', `schedD_${rowNum}_1`), Markup.button.callback('🗓 Seshanba', `schedD_${rowNum}_2`)],
+          [Markup.button.callback('🗓 Chorshanba', `schedD_${rowNum}_3`), Markup.button.callback('🗓 Payshanba', `schedD_${rowNum}_4`)],
+          [Markup.button.callback('🗓 Juma', `schedD_${rowNum}_5`)],
+          [Markup.button.callback('⏳ 15 kun', `schedF_${rowNum}_15`), Markup.button.callback('📅 1 oy', `schedM_${rowNum}`)]
         ])
       });
     } 
     
-    // STEP 2A: Pay Now
+    // --- PAY NOW ---
     else if (action === 'paynow') {
       await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi!\nSumma: ${formattedAmount} UZS.\n\nUshbu xabarga **CHEK RASMINI REPLY QILIB** yuboring.\n\nID: ${rowNum}`, { parse_mode: 'Markdown' });
-      await ctx.editMessageText(`💸 Hozir to'lash tasdiqlandi. Filial rahbaridan chek kutilmoqda...`);
+      await ctx.editMessageText(`💸 Hozir to'lash tasdiqlandi. Xodimdan chek kutilmoqda...`);
     } 
     
-    // STEP 2B: Pay Later (Scheduled)
-    else if (action === 'sched') {
-      const targetDate = getTargetDate(parseInt(schedDays));
+    // --- SCHEDULE LATER ---
+    else if (action.startsWith('sched')) {
+      let targetDate = '';
+      
+      // Calculate exact date based on button clicked
+      if (action === 'schedD') targetDate = getScheduledDateStr('D', parseInt(schedParam));
+      else if (action === 'schedF') targetDate = getScheduledDateStr('F', parseInt(schedParam));
+      else if (action === 'schedM') targetDate = getScheduledDateStr('M', 0);
       
       row.set('Status', 'SCHEDULED');
       row.set('Scheduled Date', targetDate);
       await row.save();
 
-      // Notify Staff that it's approved but delayed
+      // Notify Staff that it's approved but scheduled for later
       await bot.telegram.sendMessage(staffId, `⏳ *To'lov Rejalashtirildi!*\nSizning ${formattedAmount} UZS so'rovingiz Procurement Manager tomonidan tasdiqlandi.\nTo'lov sanasi: *${targetDate}*\n\nO'sha kuni sizga chek yuborish uchun eslatma keladi.`, { parse_mode: 'Markdown' });
       
-      // Update Manager's screen
+      // Update Manager's menu
       await ctx.editMessageText(`🗓 To'lov ${targetDate} sanasiga rejalashtirildi. Eslatma o'rnatildi.`);
     } 
     
-    // STEP 3: Reject
+    // --- REJECT ---
     else if (action === 'rej') {
       row.set('Status', 'REJECTED');
       await row.save();
