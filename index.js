@@ -5,9 +5,12 @@ const { GoogleSpreadsheet } = require('google-spreadsheet');
 // ================= CONFIG =================
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
-const MANAGER_ID = Number(process.env.MANAGER_CHAT_ID);
 
-// ================= GOOGLE AUTH =================
+// ===== ROLES (EDIT THIS) =====
+const MANAGERS = [Number(process.env.MANAGER_CHAT_ID)];
+const CEOS = [Number(process.env.CEO_CHAT_ID)];
+
+// ================= GOOGLE =================
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
 
 const auth = new JWT({
@@ -18,8 +21,26 @@ const auth = new JWT({
 
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
-// ================= MEMORY =================
+// ================= SESSION =================
 const sessions = {};
+
+function getSession(userId) {
+  if (!sessions[userId]) {
+    sessions[userId] = { step: null };
+  }
+  return sessions[userId];
+}
+
+function clearSession(userId) {
+  delete sessions[userId];
+}
+
+// ================= ROLES =================
+function getRole(userId) {
+  if (MANAGERS.includes(userId)) return 'MANAGER';
+  if (CEOS.includes(userId)) return 'CEO';
+  return 'STAFF';
+}
 
 // ================= DATA =================
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
@@ -57,29 +78,77 @@ const isValidAmount = (text) => {
 };
 
 // ================= START =================
-bot.start(startFlow);
-bot.command('new', startFlow);
+bot.start((ctx) => {
+  const role = getRole(ctx.from.id);
 
-function startFlow(ctx) {
-  sessions[ctx.from.id] = { step: 'BRANCH' };
+  if (role === 'STAFF') {
+    return startRequest(ctx);
+  }
+
+  if (role === 'MANAGER') {
+    return ctx.reply('👨‍💼 Manager panel', Markup.keyboard([
+      ['📊 Reports', '📋 Pending Requests']
+    ]).resize());
+  }
+
+  if (role === 'CEO') {
+    return ctx.reply('👑 CEO Dashboard (Read Only)', Markup.keyboard([
+      ['📊 Global Report']
+    ]).resize());
+  }
+});
+
+// ================= REQUEST START =================
+function startRequest(ctx) {
+  const session = getSession(ctx.from.id);
+  session.step = 'BRANCH';
+
   return ctx.reply(
     '📍 Filialni tanlang:',
     Markup.keyboard(branches, { columns: 2 }).resize()
   );
 }
 
-// ================= MAIN FLOW =================
+// ================= TEXT HANDLER =================
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
+  const role = getRole(userId);
   const text = ctx.message.text;
 
+  const session = getSession(userId);
+
+  // ===== CANCEL =====
   if (text === '❌ Bekor qilish') {
-    delete sessions[userId];
-    return startFlow(ctx);
+    clearSession(userId);
+    return ctx.reply('❌ Bekor qilindi');
   }
 
-  const session = sessions[userId];
-  if (!session) return;
+  // ===== STAFF FLOW =====
+  if (role === 'STAFF') {
+    return handleStaffFlow(ctx, session, text);
+  }
+
+  // ===== MANAGER =====
+  if (role === 'MANAGER') {
+    if (text === '📊 Reports') {
+      return ctx.reply('📊 Reports coming soon...');
+    }
+
+    if (text === '📋 Pending Requests') {
+      return ctx.reply('📋 Pending list coming soon...');
+    }
+  }
+
+  // ===== CEO =====
+  if (role === 'CEO') {
+    if (text === '📊 Global Report') {
+      return ctx.reply('📊 Global report coming soon...');
+    }
+  }
+});
+
+// ================= STAFF FLOW =================
+async function handleStaffFlow(ctx, session, text) {
 
   switch (session.step) {
 
@@ -87,8 +156,9 @@ bot.on('text', async (ctx) => {
       if (!branches.includes(text)) return;
       session.branch = text;
       session.step = 'CATEGORY';
+
       return ctx.reply(
-        'Kategoriyani tanlang:',
+        '📂 Kategoriyani tanlang:',
         Markup.keyboard([...getCategories(text), '❌ Bekor qilish'], { columns: 2 }).resize()
       );
 
@@ -96,42 +166,44 @@ bot.on('text', async (ctx) => {
       if (!getCategories(session.branch).includes(text)) {
         return ctx.reply('❗ Tugmadan tanlang');
       }
+
       session.category = text;
       session.step = 'AMOUNT';
-      return ctx.reply('💰 Summani kiriting:', Markup.keyboard(['❌ Bekor qilish']).resize());
+
+      return ctx.reply('💰 Summani kiriting:');
 
     case 'AMOUNT':
       const amount = isValidAmount(text);
-      if (!amount) {
-        return ctx.reply('❗ Noto‘g‘ri summa. Faqat raqam kiriting.');
-      }
+      if (!amount) return ctx.reply('❗ Noto‘g‘ri summa');
+
       session.amount = amount;
       session.step = 'DESCRIPTION';
+
       return ctx.reply('📝 Tavsif kiriting:');
 
     case 'DESCRIPTION':
       session.description = text;
       session.step = 'PRIORITY';
+
       return ctx.reply(
         '⏰ Muhimlik:',
-        Markup.keyboard(priorities, { columns: 1 }).resize()
+        Markup.keyboard(priorities).resize()
       );
 
     case 'PRIORITY':
-      if (!priorities.includes(text)) {
-        return ctx.reply('❗ Tugmadan tanlang');
-      }
+      if (!priorities.includes(text)) return ctx.reply('❗ Tugmadan tanlang');
+
       session.priority = text;
       session.step = 'PAY_TYPE';
+
       return ctx.reply(
         '💳 To‘lov turi:',
         Markup.keyboard([...payTypes, '❌ Bekor qilish']).resize()
       );
 
     case 'PAY_TYPE':
-      if (!payTypes.includes(text)) {
-        return ctx.reply('❗ Tugmadan tanlang');
-      }
+      if (!payTypes.includes(text)) return ctx.reply('❗ Tugmadan tanlang');
+
       session.payType = text;
 
       if (text === 'Naqd') {
@@ -146,10 +218,10 @@ bot.on('text', async (ctx) => {
       session.payDetail = text;
       return showSummary(ctx, session);
   }
-});
+}
 
 // ================= SUMMARY =================
-async function showSummary(ctx, s) {
+function showSummary(ctx, s) {
   const msg = `
 📍 ${escape(s.branch)}
 📂 ${escape(s.category)}
@@ -168,55 +240,15 @@ async function showSummary(ctx, s) {
   });
 }
 
-// ================= SUBMIT =================
-bot.action('submit', async (ctx) => {
-  const userId = ctx.from.id;
-  const s = sessions[userId];
-  if (!s) return;
-
-  try {
-    await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Pending_Expenses'];
-
-    const row = await sheet.addRow({
-      Timestamp: new Date().toISOString(),
-      Branch: s.branch,
-      Amount: s.amount,
-      'Payment Type': s.payType,
-      'Payment Detail': s.payDetail,
-      Description: `[${s.category}] ${s.description}`,
-      Status: 'PENDING',
-      Priority: s.priority,
-      _StaffChatId: userId.toString()
-    });
-
-    await bot.telegram.sendMessage(
-      MANAGER_ID,
-      `🏢 Yangi so'rov\n📍 ${s.branch}\n💰 ${Number(s.amount).toLocaleString()} UZS\n📝 ${s.description}`,
-      {
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('✅ Tasdiqlash', `decide_${row.rowNumber}`)],
-          [Markup.button.callback('❌ Rad etish', `reject_${row.rowNumber}`)]
-        ])
-      }
-    );
-
-    delete sessions[userId];
-
-    await ctx.editMessageText('✅ Yuborildi!');
-    return startFlow(ctx);
-
-  } catch (err) {
-    console.error(err);
-    ctx.reply('❌ Xatolik yuz berdi');
-  }
+// ================= ACTIONS =================
+bot.action('submit', (ctx) => {
+  ctx.reply('🚧 Next step: Budget + Submit logic');
 });
 
-// ================= CANCEL =================
 bot.action('cancel', (ctx) => {
-  delete sessions[ctx.from.id];
+  clearSession(ctx.from.id);
   ctx.editMessageText('❌ Bekor qilindi');
 });
 
-// ================= LAUNCH =================
+// ================= START BOT =================
 bot.launch();
