@@ -6,7 +6,7 @@ const cron = require('node-cron');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_ID = process.env.MANAGER_CHAT_ID;
-const CEO_ID = process.env.CEO_CHAT_ID; // Add this to your Railway variables
+const CEO_ID = process.env.CEO_CHAT_ID;
 
 // --- GOOGLE SHEETS AUTH ---
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
@@ -62,7 +62,7 @@ async function generateGlobalReport() {
     return msg;
 }
 
-// --- DOUBLE AUDIT BUDGET LOGIC (Branch + Category) ---
+// --- DOUBLE AUDIT BUDGET LOGIC (CRASH FIX APPLIED) ---
 async function getBudgetWarning(branch, category, amountStr) {
   try {
     await doc.loadInfo();
@@ -76,12 +76,21 @@ async function getBudgetWarning(branch, category, amountStr) {
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
-    // Find Branch Limit and Category Limit
-    const branchLimitRow = budgetRows.find(r => r.get('Branch') === branch && (!r.get('Category') || r.get('Category').trim() === ''));
-    const categoryLimitRow = budgetRows.find(r => r.get('Branch') === branch && r.get('Category') === category);
+    // Safely check cells to prevent crashes on empty limits
+    const branchLimitRow = budgetRows.find(r => {
+        const cat = r.get('Category') ? r.get('Category').toString().trim() : '';
+        return r.get('Branch') === branch && cat === '';
+    });
+    const categoryLimitRow = budgetRows.find(r => {
+        const cat = r.get('Category') ? r.get('Category').toString().trim() : '';
+        return r.get('Branch') === branch && cat === category;
+    });
 
-    const branchLimit = branchLimitRow ? parseInt(branchLimitRow.get('Monthly Limit').replace(/[^0-9]/g, '')) : Infinity;
-    const categoryLimit = categoryLimitRow ? parseInt(categoryLimitRow.get('Monthly Limit').replace(/[^0-9]/g, '')) : Infinity;
+    const branchLimitStr = branchLimitRow ? branchLimitRow.get('Monthly Limit') : null;
+    const branchLimit = branchLimitStr ? parseInt(branchLimitStr.toString().replace(/[^0-9]/g, '')) : Infinity;
+
+    const categoryLimitStr = categoryLimitRow ? categoryLimitRow.get('Monthly Limit') : null;
+    const categoryLimit = categoryLimitStr ? parseInt(categoryLimitStr.toString().replace(/[^0-9]/g, '')) : Infinity;
 
     let branchSpent = 0;
     let categorySpent = 0;
@@ -91,9 +100,10 @@ async function getBudgetWarning(branch, category, amountStr) {
       if (r.get('Branch') === branch && (status === 'PAID' || status === 'SCHEDULED' || status === 'CHEQUE_SENT')) {
         const rowDate = new Date(r.get('Timestamp'));
         if (rowDate.getMonth() === currentMonth && rowDate.getFullYear() === currentYear) {
-          const amt = parseInt(r.get('Amount').toString().replace(/[^0-9]/g, '')) || 0;
+          const amt = parseInt(r.get('Amount') ? r.get('Amount').toString().replace(/[^0-9]/g, '') : '0') || 0;
           branchSpent += amt;
-          if (r.get('Description').includes(`[${category}]`)) {
+          const desc = r.get('Description') || '';
+          if (desc.includes(`[${category}]`)) {
             categorySpent += amt;
           }
         }
@@ -103,20 +113,18 @@ async function getBudgetWarning(branch, category, amountStr) {
     const requested = parseInt(amountStr);
     let warningMsg = '\n━━━━━━━━━━━━━━━';
     
-    // Check Branch Status
-    if (branchLimit !== Infinity) {
+    if (branchLimit !== Infinity && !isNaN(branchLimit)) {
         const branchTotal = branchSpent + requested;
         warningMsg += (branchTotal > branchLimit) ? `\n🚨 *FILIAL BUDJETI OSHDI!* (${branchTotal.toLocaleString()} / ${branchLimit.toLocaleString()})` : `\n✅ *Filial qoldig'i:* ${(branchLimit - branchTotal).toLocaleString()} UZS`;
     }
 
-    // Check Category Status
-    if (categoryLimit !== Infinity) {
+    if (categoryLimit !== Infinity && !isNaN(categoryLimit)) {
         const catTotal = categorySpent + requested;
         warningMsg += (catTotal > categoryLimit) ? `\n⚠️ *KATEGORIYA LIMITDAN OSHDI!* (${category})` : `\n✅ *Kategoriya qoldig'i:* ${(categoryLimit - catTotal).toLocaleString()} UZS`;
     }
 
     return warningMsg === '\n━━━━━━━━━━━━━━━' ? '' : warningMsg;
-  } catch (e) { console.error(e); return ''; }
+  } catch (e) { console.error("Budget Error:", e); return ''; }
 }
 
 // ==========================================
@@ -136,7 +144,6 @@ bot.command('admin', (ctx) => {
   }
 });
 
-// CEO & Manager shared Cashflow
 bot.hears(['💸 Cashflow', '💸 Cashflow Forecast'], async (ctx) => {
   const uid = ctx.from.id.toString();
   if (uid !== MANAGER_ID && uid !== CEO_ID) return;
@@ -195,9 +202,6 @@ bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
   } catch (e) { ctx.reply('❌ Xatolik yuz berdi.'); }
 });
 
-// ==========================================
-// 2. DAILY REMINDERS (CRON JOB)
-// ==========================================
 cron.schedule('0 9 * * *', async () => {
   try {
     await doc.loadInfo();
@@ -215,9 +219,6 @@ cron.schedule('0 9 * * *', async () => {
   } catch (e) { console.error("Cron Error:", e); }
 }, { scheduled: true, timezone: "Asia/Tashkent" });
 
-// ==========================================
-// 3. THE REVERSED CHEQUE FLOW
-// ==========================================
 bot.on('photo', async (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
   const reply = ctx.message.reply_to_message;
@@ -245,21 +246,23 @@ bot.on('photo', async (ctx) => {
 });
 
 // ==========================================
-// 4. NEW REQUEST WORKFLOW (Staff Side)
+// 4. NEW REQUEST WORKFLOW (VOICE ENABLED)
 // ==========================================
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
   ctx.reply('IELTS Zone Finance Bot 🎓\nFilialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
 });
 
-bot.on('text', async (ctx) => {
+// Listen to both text and voice
+bot.on(['text', 'voice'], async (ctx) => {
   const userId = ctx.from.id.toString();
-  const text = ctx.message.text;
+  const text = ctx.message.text || '';
+  const voice = ctx.message.voice;
   
   if (text.includes('Hisobot') || text.includes('Kutilayotgan') || text.includes('Cashflow')) return;
   
   if (text === '❌ Bekor qilish' || text === '/start') {
-    delete userSessions[userId]; // Fixes loop issue
+    delete userSessions[userId];
     return ctx.reply('Bekor qilindi. Boshlash uchun /start bosing yoki filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
 
@@ -270,6 +273,11 @@ bot.on('text', async (ctx) => {
           return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Bekor qilish'], { columns: 2 }).resize());
       }
       return;
+  }
+
+  // If a voice is sent anywhere EXCEPT description, reject it
+  if (voice && session.step !== 'DESCRIPTION') {
+      return ctx.reply("❌ Iltimos, ushbu bosqichda faqat tugmalardan foydalaning yoki matn kiriting.");
   }
 
   if (session.step === 'BRANCH') {
@@ -289,10 +297,15 @@ bot.on('text', async (ctx) => {
   if (session.step === 'AMOUNT') {
     session.amount = text.replace(/[^0-9]/g, '');
     session.step = 'DESCRIPTION';
-    return ctx.reply('Xarajat sababi va tafsilotlari (Description):');
+    return ctx.reply('Xarajat sababi (Matn yoki Ovozli xabar yuborishingiz mumkin):');
   }
   if (session.step === 'DESCRIPTION') {
-    session.description = text;
+    if (voice) {
+        session.description = "🎤 [Ovozli xabar]";
+        session.voiceFileId = voice.file_id;
+    } else {
+        session.description = text;
+    }
     session.step = 'PRIORITY';
     return ctx.reply('Muhimligi qanday?', Markup.keyboard([...priorities, '❌ Bekor qilish'], { columns: 1 }).resize());
   }
@@ -333,7 +346,7 @@ async function showSummary(ctx, session) {
 // 5. CALLBACK HANDLERS
 // ==========================================
 bot.action('cancel', async (ctx) => {
-    delete userSessions[ctx.from.id]; // CLEAR SESSION TO PREVENT LOOPING
+    delete userSessions[ctx.from.id];
     await ctx.editMessageText('❌ So\'rov bekor qilindi.');
     ctx.reply('Filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
 });
@@ -363,20 +376,23 @@ bot.action('submit', async (ctx) => {
     
     const budgetAudit = await getBudgetWarning(session.branch, session.category, session.amount);
     
-    await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}${budgetAudit}`, {
+    const managerMsg = await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}${budgetAudit}`, {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
           [Markup.button.callback('✅ Tasdiqlash (Qaror)', `decide_${row.rowNumber}`)], 
           [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]
       ])
     });
+
+    // If there is a voice message, forward it to the manager
+    if (session.voiceFileId) {
+        await bot.telegram.sendVoice(MANAGER_ID, session.voiceFileId, {
+            caption: `🎤 Yuqoridagi so'rovning ovozli izohi (ID: ${row.rowNumber})`
+        });
+    }
     
     ctx.editMessageText('✅ So\'rov muvaffaqiyatli yuborildi!');
-    
-    // FIX LOOP: Completely delete the session after successful submission
     delete userSessions[ctx.from.id]; 
-    
-    // Remove the inline keyboard entirely and present standard menu
     ctx.reply('Yangi so\'rov yaratish uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   } catch (e) { 
       console.error(e); 
@@ -384,7 +400,6 @@ bot.action('submit', async (ctx) => {
   }
 });
 
-// STAFF CONFIRMATION BUTTON
 bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
   const rowNum = ctx.match[1];
   try {
@@ -400,7 +415,6 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
   } catch(e) { console.error(e); }
 });
 
-// FULL MANAGER SCHEDULING BUTTONS
 bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async (ctx) => {
   const [action, rowNum, param] = [ctx.match[1], ctx.match[2], ctx.match[3]];
   
