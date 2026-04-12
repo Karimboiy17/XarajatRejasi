@@ -21,7 +21,11 @@ const userSessions = {};
 
 // --- CONFIG ---
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
-const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
+
+// KATEGORIYALARNI AJRATAMIZ
+const marketingCategories = ['syomka xarajatlari', 'Reklama mahsulotlarini chiqarish'];
+const generalCategories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'giftbox sovgalar', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
+
 const priorities = ["🔴 O'ta muhim (Bugun)", "🟡 O'rtacha (Ertaga)", "🔵 Normal (Shu hafta)", "🟢 Shoshilinch emas (Shu oy)"];
 
 // --- DATE UTILS ---
@@ -62,13 +66,13 @@ async function generateGlobalReport() {
     return msg;
 }
 
-// --- DOUBLE AUDIT BUDGET LOGIC (CRASH FIX APPLIED) ---
-async function getBudgetWarning(branch, category, amountStr) {
+// --- HARD LIMIT BUDGET LOGIC ---
+async function getBudgetStatus(branch, category, amountStr) {
   try {
     await doc.loadInfo();
     const budgetSheet = doc.sheetsByTitle['Budgets'];
     const expenseSheet = doc.sheetsByTitle['Pending_Expenses'];
-    if (!budgetSheet || !expenseSheet) return '';
+    if (!budgetSheet || !expenseSheet) return { isOver: false, msg: '' };
 
     const budgetRows = await budgetSheet.getRows();
     const expenseRows = await expenseSheet.getRows();
@@ -76,7 +80,6 @@ async function getBudgetWarning(branch, category, amountStr) {
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
-    // Safely check cells to prevent crashes on empty limits
     const branchLimitRow = budgetRows.find(r => {
         const cat = r.get('Category') ? r.get('Category').toString().trim() : '';
         return r.get('Branch') === branch && cat === '';
@@ -112,19 +115,30 @@ async function getBudgetWarning(branch, category, amountStr) {
 
     const requested = parseInt(amountStr);
     let warningMsg = '\n━━━━━━━━━━━━━━━';
+    let isOver = false;
     
     if (branchLimit !== Infinity && !isNaN(branchLimit)) {
         const branchTotal = branchSpent + requested;
-        warningMsg += (branchTotal > branchLimit) ? `\n🚨 *FILIAL BUDJETI OSHDI!* (${branchTotal.toLocaleString()} / ${branchLimit.toLocaleString()})` : `\n✅ *Filial qoldig'i:* ${(branchLimit - branchTotal).toLocaleString()} UZS`;
+        if (branchTotal > branchLimit) {
+            isOver = true;
+            warningMsg += `\n🚨 *FILIAL BUDJETI OSHDI!* (${branchTotal.toLocaleString()} / ${branchLimit.toLocaleString()})`;
+        } else {
+            warningMsg += `\n✅ *Filial qoldig'i:* ${(branchLimit - branchTotal).toLocaleString()} UZS`;
+        }
     }
 
     if (categoryLimit !== Infinity && !isNaN(categoryLimit)) {
         const catTotal = categorySpent + requested;
-        warningMsg += (catTotal > categoryLimit) ? `\n⚠️ *KATEGORIYA LIMITDAN OSHDI!* (${category})` : `\n✅ *Kategoriya qoldig'i:* ${(categoryLimit - catTotal).toLocaleString()} UZS`;
+        if (catTotal > categoryLimit) {
+            isOver = true;
+            warningMsg += `\n⚠️ *KATEGORIYA LIMITDAN OSHDI!* (${category})`;
+        } else {
+            warningMsg += `\n✅ *Kategoriya qoldig'i:* ${(categoryLimit - catTotal).toLocaleString()} UZS`;
+        }
     }
 
-    return warningMsg === '\n━━━━━━━━━━━━━━━' ? '' : warningMsg;
-  } catch (e) { console.error("Budget Error:", e); return ''; }
+    return { isOver, msg: warningMsg === '\n━━━━━━━━━━━━━━━' ? '' : warningMsg };
+  } catch (e) { console.error("Budget Error:", e); return { isOver: false, msg: '' }; }
 }
 
 // ==========================================
@@ -246,14 +260,13 @@ bot.on('photo', async (ctx) => {
 });
 
 // ==========================================
-// 4. NEW REQUEST WORKFLOW (VOICE ENABLED)
+// 4. NEW REQUEST WORKFLOW 
 // ==========================================
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
   ctx.reply('IELTS Zone Finance Bot 🎓\nFilialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
 });
 
-// Listen to both text and voice
 bot.on(['text', 'voice'], async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text || '';
@@ -270,12 +283,12 @@ bot.on(['text', 'voice'], async (ctx) => {
   if (!session) {
       if (branches.includes(text)) {
           userSessions[userId] = { step: 'CATEGORY', branch: text };
-          return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Bekor qilish'], { columns: 2 }).resize());
+          const catsToShow = text === '📍 Marketing' ? marketingCategories : generalCategories;
+          return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...catsToShow, '❌ Bekor qilish'], { columns: 2 }).resize());
       }
       return;
   }
 
-  // If a voice is sent anywhere EXCEPT description, reject it
   if (voice && session.step !== 'DESCRIPTION') {
       return ctx.reply("❌ Iltimos, ushbu bosqichda faqat tugmalardan foydalaning yoki matn kiriting.");
   }
@@ -284,11 +297,14 @@ bot.on(['text', 'voice'], async (ctx) => {
     if (branches.includes(text)) { 
         session.branch = text; 
         session.step = 'CATEGORY'; 
-        return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, '❌ Bekor qilish'], { columns: 2 }).resize()); 
+        // Marketing uchun alohida, boshqa filiallar uchun umumiy ro'yxat
+        const catsToShow = text === '📍 Marketing' ? marketingCategories : generalCategories;
+        return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...catsToShow, '❌ Bekor qilish'], { columns: 2 }).resize()); 
     }
   }
   if (session.step === 'CATEGORY') {
-    if (categories.includes(text)) { 
+    const allowedCats = session.branch === '📍 Marketing' ? marketingCategories : generalCategories;
+    if (allowedCats.includes(text)) { 
         session.category = text; 
         session.step = 'AMOUNT'; 
         return ctx.reply('Summani kiriting (Masalan: 100 000):', Markup.keyboard(['❌ Bekor qilish']).resize()); 
@@ -332,9 +348,26 @@ bot.on(['text', 'voice'], async (ctx) => {
   }
 });
 
+// --- HARD LIMIT SUMMARY ---
 async function showSummary(ctx, session) {
+  // Avval byudjetni tekshiramiz
+  ctx.reply('⏳ Limitlar tekshirilmoqda...');
+  const budget = await getBudgetStatus(session.branch, session.category, session.amount);
+
+  if (budget.isOver) {
+      // LIMIT TUGAGAN BO'LSA - HARD STOP (BLOKLASH)
+      const rejectMsg = `❌ *LIMITDAN OSHIB KETDI!*\n\nSiz ushbu xarajatni tasdiqqa yubora olmaysiz, chunki belgilangan oylik limit tugagan.\n${budget.msg}\n\nIltimos, ruxsat olish uchun *Mr. Karim* (@KarimboyXolmirzayev) bilan bog'laning. U kishi ushbu tizim va limitlar haqida xabardorlar.`;
+      
+      delete userSessions[ctx.from.id]; // Sessiyani tozalab tashlaymiz
+      return ctx.reply(rejectMsg, {
+          parse_mode: 'Markdown',
+          ...Markup.keyboard(branches, { columns: 2 }).resize()
+      });
+  }
+
+  // AGAR LIMIT YETARLI BO'LSA - NORMAL TASDIQLASH OYNASI
   const formattedAmount = Number(session.amount).toLocaleString('en-US');
-  let msg = `⚠️ *Menejerga yuborishdan oldin tekshiring:*\n\n📍 Filial: ${session.branch}\n📂 Kategoriya: ${session.category}\n💰 Summa: ${formattedAmount} UZS\n📝 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}\n💳 To'lov: ${session.payType} (${session.payDetail})`;
+  let msg = `⚠️ *Menejerga yuborishdan oldin tekshiring:*\n\n📍 Filial: ${session.branch}\n📂 Kategoriya: ${session.category}\n💰 Summa: ${formattedAmount} UZS\n📝 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}\n💳 To'lov: ${session.payType} (${session.payDetail})\n${budget.msg}`;
   
   ctx.reply(msg, {
     parse_mode: 'Markdown',
@@ -374,9 +407,8 @@ bot.action('submit', async (ctx) => {
       'Priority': session.priority
     });
     
-    const budgetAudit = await getBudgetWarning(session.branch, session.category, session.amount);
-    
-    const managerMsg = await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}${budgetAudit}`, {
+    // Menejerga bildirishnoma (limit oshib ketgani haqidagi ogohlantirishsiz, chunki xodim shu joygacha yetib kelgan bo'lsa limit bor degani)
+    const managerMsg = await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}`, {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
           [Markup.button.callback('✅ Tasdiqlash (Qaror)', `decide_${row.rowNumber}`)], 
@@ -384,7 +416,6 @@ bot.action('submit', async (ctx) => {
       ])
     });
 
-    // If there is a voice message, forward it to the manager
     if (session.voiceFileId) {
         await bot.telegram.sendVoice(MANAGER_ID, session.voiceFileId, {
             caption: `🎤 Yuqoridagi so'rovning ovozli izohi (ID: ${row.rowNumber})`
