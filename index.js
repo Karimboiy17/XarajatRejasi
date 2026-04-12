@@ -19,7 +19,7 @@ const auth = new JWT({
 });
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
-// Memory state for user conversations (Wizards)
+// Memory state for user conversations (Fixes the loop bug)
 const userSessions = {};
 
 // ==========================================
@@ -30,10 +30,16 @@ const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'r
 const priorities = ["🔴 O'ta muhim (Bugun)", "🟡 O'rtacha (Ertaga)", "🔵 Normal (Shu hafta)", "🟢 Shoshilinch emas (Shu oy)"];
 
 // ==========================================
-// UTILITY FUNCTIONS (Bug Fixes & Logic)
+// UTILITY FUNCTIONS 
 // ==========================================
+// Safe number parsing for amounts like "100k", "100 000", "100.000"
+function parseSafeInt(str) {
+  if (!str) return 0;
+  return parseInt(str.toString().replace(/[^0-9]/g, '')) || 0;
+}
+
+// Forces Tashkent timezone (UTC+5)
 function getTodayStr() {
-  // Forces Tashkent timezone (UTC+5) to prevent midnight server errors
   return new Date(new Date().getTime() + (5 * 60 * 60 * 1000)).toISOString().split('T')[0];
 }
 
@@ -42,26 +48,20 @@ function getScheduledDateStr(type, param) {
   if (type === 'D') { 
     const currentDay = tashkentTime.getUTCDay(); 
     let distance = param - currentDay;
-    if (distance <= 0) distance += 7; // Pushes to next week if day already passed
+    if (distance <= 0) distance += 7; 
     tashkentTime.setUTCDate(tashkentTime.getUTCDate() + distance);
   } else if (type === 'F') {
-    tashkentTime.setUTCDate(tashkentTime.getUTCDate() + param); // Plus X days
+    tashkentTime.setUTCDate(tashkentTime.getUTCDate() + param);
   } else if (type === 'M') {
-    tashkentTime.setUTCMonth(tashkentTime.getUTCMonth() + 1); // Plus 1 month
+    tashkentTime.setUTCMonth(tashkentTime.getUTCMonth() + 1); 
   }
   return tashkentTime.toISOString().split('T')[0];
 }
 
-// FIX: Removes the text inside brackets for clean manager reports (e.g. removes "(Ertaga)")
+// Removes text inside brackets for clean manager reports
 function cleanPriority(priorityStr) {
   if (!priorityStr) return "Normal";
   return priorityStr.split('(')[0].trim(); 
-}
-
-// FIX: Safe number parsing for amounts like "100k", "100 000", "100.000"
-function parseSafeInt(str) {
-  if (!str) return 0;
-  return parseInt(str.toString().replace(/[^0-9]/g, '')) || 0;
 }
 
 // ==========================================
@@ -77,14 +77,13 @@ async function getDoubleBudgetWarning(branch, category, amountStr) {
     const budgetRows = await budgetSheet.getRows();
     const expenseRows = await expenseSheet.getRows();
     const requested = parseSafeInt(amountStr);
-    const now = new Date(new Date().getTime() + (5 * 60 * 60 * 1000)); // Tashkent time
+    const now = new Date(new Date().getTime() + (5 * 60 * 60 * 1000)); 
 
-    // Helper: Calculates spent money for current month based on branch/category
     const calculateSpent = (b, cat = null) => {
       let spent = 0;
       expenseRows.forEach(r => {
         const rowDateStr = r.get('Timestamp');
-        if (!rowDateStr) return; // Skip empty rows
+        if (!rowDateStr) return; 
         
         const rowDate = new Date(rowDateStr);
         const status = r.get('Status');
@@ -92,7 +91,6 @@ async function getDoubleBudgetWarning(branch, category, amountStr) {
         const matchesCategory = cat ? (r.get('Description') || '').includes(`[${cat}]`) : true;
         const isThisMonth = rowDate.getMonth() === now.getMonth() && rowDate.getFullYear() === now.getFullYear();
 
-        // Only count actual liabilities
         if (matchesBranch && matchesCategory && isThisMonth && (status === 'PAID' || status === 'SCHEDULED' || status === 'CHEQUE_SENT')) {
           spent += parseSafeInt(r.get('Amount'));
         }
@@ -100,7 +98,7 @@ async function getDoubleBudgetWarning(branch, category, amountStr) {
       return spent;
     };
 
-    // 1. Audit Branch Total (Looks for row where Branch matches but Category is empty)
+    // 1. Audit Branch Total 
     const branchBudgetRow = budgetRows.find(r => r.get('Branch') === branch && (!r.get('Category') || r.get('Category').trim() === ''));
     const branchSpent = calculateSpent(branch);
     let branchMsg = "ℹ️ Filial limiti belgilanmagan.";
@@ -122,7 +120,7 @@ async function getDoubleBudgetWarning(branch, category, amountStr) {
         : `✅ Kategoriya Zaxirasi: ${(cLimit - (catSpent + requested)).toLocaleString()} UZS`;
     }
 
-    return `\n\n📊 *Budjet Nazorati (Shu oy):*\n${branchMsg}\n${catMsg}`;
+    return `\n\n📊 *Budjet Nazorati:*\n${branchMsg}\n${catMsg}`;
   } catch (e) { 
     console.error("Budget Error:", e);
     return '\n\n⚠️ *Budjetni hisoblashda xatolik yuz berdi.*'; 
@@ -168,7 +166,7 @@ bot.command('admin', (ctx) => {
   }
 });
 
-// SHARED COMMANDS
+// Shared Commands
 bot.hears(['💸 Cashflow', '💸 Cashflow Forecast'], async (ctx) => {
   const uid = ctx.from.id.toString();
   if (uid !== MANAGER_ID && uid !== CEO_ID) return;
@@ -204,7 +202,7 @@ bot.hears(['📊 Hisobot (Report)', '📈 Umumiy Hisobot'], async (ctx) => {
   } catch (e) { ctx.reply('❌ Xatolik.'); }
 });
 
-// MANAGER ONLY COMMAND
+// Manager Only Command
 bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
   if (ctx.from.id.toString() !== MANAGER_ID) return;
   try {
@@ -227,7 +225,7 @@ bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
 });
 
 // ==========================================
-// 2. CRON REMINDERS (Daily 9:00 AM)
+// 2. DAILY REMINDERS (CRON JOB)
 // ==========================================
 cron.schedule('0 9 * * *', async () => {
   try {
@@ -247,7 +245,7 @@ cron.schedule('0 9 * * *', async () => {
 // 3. REVERSED CHEQUE FLOW
 // ==========================================
 bot.on('photo', async (ctx) => {
-  if (ctx.from.id.toString() !== MANAGER_ID) return; // Only Manager can upload cheques
+  if (ctx.from.id.toString() !== MANAGER_ID) return; 
   const reply = ctx.message.reply_to_message;
   if (reply && reply.text && reply.text.includes('ID:')) {
     const rowNum = reply.text.split('ID:')[1].trim();
@@ -274,12 +272,11 @@ bot.on('photo', async (ctx) => {
 });
 
 // ==========================================
-// 4. STAFF REQUEST WIZARD
+// 4. STAFF REQUEST WIZARD (With Loop Fix)
 // ==========================================
 bot.command(['start', 'new'], (ctx) => {
   const userId = ctx.from.id;
-  // FIX: Forcefully reset session to prevent loops
-  delete userSessions[userId];
+  delete userSessions[userId]; // Destroys any old session to prevent loop
   userSessions[userId] = { step: 'BRANCH' };
   ctx.reply('IELTS Zone Finance Bot 🎓\nFilialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
 });
@@ -291,13 +288,13 @@ bot.on('text', async (ctx) => {
   // Ignore admin buttons
   if (text.includes('Hisobot') || text.includes('Kutilayotgan') || text.includes('Cashflow')) return;
 
-  // FIX: Cancel explicitly destroys session to stop loop
+  // Manual cancel strictly kills the session
   if (text === '❌ Bekor qilish' || text === '/start') {
     delete userSessions[userId];
     return ctx.reply('Bekor qilindi. Boshlash uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
 
-  // Session Bootstrapper (In case bot resets but user taps an old keyboard button)
+  // Session Bootstrapper 
   if (!userSessions[userId] && branches.includes(text)) {
     userSessions[userId] = { step: 'BRANCH' };
   }
@@ -316,7 +313,7 @@ bot.on('text', async (ctx) => {
     if (categories.includes(text)) { 
       session.category = text; 
       session.step = 'AMOUNT'; 
-      return ctx.reply('Summani kiriting:', Markup.keyboard(['❌ Bekor qilish']).resize()); 
+      return ctx.reply('Summani kiriting (Faqat raqam):', Markup.keyboard(['❌ Bekor qilish']).resize()); 
     }
   }
   if (session.step === 'AMOUNT') {
@@ -341,22 +338,21 @@ bot.on('text', async (ctx) => {
     session.payType = text;
     if (text === 'Naqd') { 
       session.payDetail = 'N/A'; 
-      return askConfirmation(ctx, session); 
+      return showSummary(ctx, session); 
     }
     session.step = 'PAY_DETAIL';
     return ctx.reply(text === 'Karta' ? 'Karta raqamini kiriting:' : 'Firma nomini kiriting:');
   }
   if (session.step === 'PAY_DETAIL') {
     session.payDetail = text;
-    return askConfirmation(ctx, session);
+    return showSummary(ctx, session);
   }
 });
 
-function askConfirmation(ctx, session) {
+async function showSummary(ctx, session) {
   const formattedAmount = session.amount.toLocaleString('en-US');
   let msg = `⚠️ *Menejerga yuborishdan oldin tekshiring:*\n\n📍 Filial: ${session.branch}\n📂 Kategoriya: ${session.category}\n💰 Summa: ${formattedAmount} UZS\n📝 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}\n💳 To'lov: ${session.payType} (${session.payDetail})`;
   
-  // Explicit inline keyboard for final decision
   ctx.reply(msg, { 
     parse_mode: 'Markdown', 
     ...Markup.inlineKeyboard([
@@ -367,7 +363,7 @@ function askConfirmation(ctx, session) {
 }
 
 // ==========================================
-// 5. INLINE ACTION HANDLERS (Callbacks)
+// 5. INLINE ACTION HANDLERS
 // ==========================================
 bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
   const action = ctx.match[1];
@@ -375,7 +371,7 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
   const session = userSessions[userId];
   
   if (action === 'cancel_final') {
-    delete userSessions[userId]; // FIX: Clear session
+    delete userSessions[userId]; 
     await ctx.editMessageText('❌ So\'rov bekor qilindi.');
     return ctx.reply('Yangi so\'rov uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
   }
@@ -383,8 +379,21 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
   if (action === 'submit_final' && session) {
     try {
       await doc.loadInfo();
+      const budgetRows = await doc.sheetsByTitle['Budgets'].getRows();
+      const requested = session.amount;
+
+      // --- HARD GATE: Check Branch Limit before doing anything ---
+      const bLimitRow = budgetRows.find(r => r.get('Branch') === session.branch && (!r.get('Category') || r.get('Category').trim() === ''));
+      const bLimitValue = bLimitRow ? parseSafeInt(bLimitRow.get('Monthly Limit')) : Infinity;
+
+      if (requested > bLimitValue) {
+        await ctx.editMessageText(`❌ *RAD ETILDI!*\n\nBu summa filial limitidan yuqori (${bLimitValue.toLocaleString()} UZS).\nIltimos rahbariyat bilan bog'laning.`);
+        delete userSessions[userId];
+        return; 
+      }
+
+      // Add to spreadsheet
       const sheet = doc.sheetsByTitle['Pending_Expenses'];
-      
       const row = await sheet.addRow({
         'Timestamp': new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }),
         'Branch': session.branch,
@@ -398,37 +407,39 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Priority': session.priority
       });
 
-      // Execute Double Budget Audit
-      const budgetWarning = await getDoubleBudgetWarning(session.branch, session.category, session.amount);
+      // Get Warning & Button Layout
+      const budgetAudit = await getDoubleBudgetWarning(session.branch, session.category, session.amount);
+      const buttons = [];
       
-      // Notify Manager
+      if (budgetAudit.includes('🔴')) {
+        // Hide "Approve" if limit is hit. Manager must reject or fix budget in Sheets first.
+        buttons.push([Markup.button.callback('❌ Rad etish (Limit oshilgan)', `rej_${row.rowNumber}`)]);
+      } else {
+        buttons.push([Markup.button.callback('✅ Tasdiqlash (Reja)', `decide_${row.rowNumber}`)]);
+        buttons.push([Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]);
+      }
+
+      // Send to Manager
       await bot.telegram.sendMessage(MANAGER_ID, 
-        `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${session.amount.toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority} ${budgetWarning}`, 
-        {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Tasdiqlash (Reja)', `decide_${row.rowNumber}`)], 
-            [Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]
-          ])
-        }
+        `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${session.amount.toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority} ${budgetAudit}`, 
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
       );
 
-      delete userSessions[userId]; // FIX: Clear session to prevent loop
+      delete userSessions[userId]; // Destroys session to stop loop
       await ctx.editMessageText(`✅ Muvaffaqiyatli yuborildi!\nID: ${row.rowNumber}`);
       ctx.reply('Yangi so\'rov uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
     } catch (e) { 
-      delete userSessions[userId]; // Safety cleanup
+      delete userSessions[userId]; 
       ctx.editMessageText('❌ Xatolik yuz berdi. Iltimos qaytadan urining.'); 
       console.error(e); 
     }
   } else {
-    // Session expired or duplicate click
     delete userSessions[userId];
     ctx.editMessageText('❌ Sessiya tugadi. /start bosing.');
   }
 });
 
-// STAFF CONFIRMATION BUTTON
+// Staff Confirm Cheque
 bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
   const rowNum = ctx.match[1];
   try {
@@ -445,9 +456,9 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
   } catch(e) { console.error(e); ctx.answerCbQuery("Xatolik yuz berdi."); }
 });
 
-// MANAGER DECISION BUTTONS
+// Manager Action Buttons
 bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async (ctx) => {
-  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.answerCbQuery("Sizda huquq yo'q."); // Security lock
+  if (ctx.from.id.toString() !== MANAGER_ID) return ctx.answerCbQuery("Sizda huquq yo'q."); 
   
   const [action, rowNum, param] = [ctx.match[1], ctx.match[2], ctx.match[3]];
   try {
@@ -460,7 +471,7 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
 
     if (action === 'decide') {
       return ctx.editMessageText(`💸 Qachon to'laysiz?`, Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Hozir To\'lash (Chek yuborish)', `paynow_${rowNum}`)],
+        [Markup.button.callback('✅ Hozir To\'lash (Chek)', `paynow_${rowNum}`)],
         [Markup.button.callback('🗓 Dushanba', `schedD_${rowNum}_1`), Markup.button.callback('🗓 Seshanba', `schedD_${rowNum}_2`)],
         [Markup.button.callback('🗓 Chorshanba', `schedD_${rowNum}_3`), Markup.button.callback('🗓 Payshanba', `schedD_${rowNum}_4`)],
         [Markup.button.callback('🗓 Juma', `schedD_${rowNum}_5`)],
@@ -499,7 +510,7 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
 });
 
 // ==========================================
-// BOOT
+// BOOTSTRAP
 // ==========================================
 bot.launch().then(() => console.log('Bot is running...'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
