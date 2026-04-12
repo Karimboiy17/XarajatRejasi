@@ -19,7 +19,7 @@ const auth = new JWT({
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 const userSessions = {};
 
-// --- CONFIG ---
+// --- CONFIG & CATEGORIES ---
 const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
 
 // KATEGORIYALARNI AJRATAMIZ
@@ -260,7 +260,7 @@ bot.on('photo', async (ctx) => {
 });
 
 // ==========================================
-// 4. NEW REQUEST WORKFLOW 
+// 4. NEW REQUEST WORKFLOW (VOICE & SMART CATEGORIES)
 // ==========================================
 bot.command(['start', 'new'], (ctx) => {
   userSessions[ctx.from.id] = { step: 'BRANCH' };
@@ -297,7 +297,6 @@ bot.on(['text', 'voice'], async (ctx) => {
     if (branches.includes(text)) { 
         session.branch = text; 
         session.step = 'CATEGORY'; 
-        // Marketing uchun alohida, boshqa filiallar uchun umumiy ro'yxat
         const catsToShow = text === '📍 Marketing' ? marketingCategories : generalCategories;
         return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...catsToShow, '❌ Bekor qilish'], { columns: 2 }).resize()); 
     }
@@ -308,6 +307,8 @@ bot.on(['text', 'voice'], async (ctx) => {
         session.category = text; 
         session.step = 'AMOUNT'; 
         return ctx.reply('Summani kiriting (Masalan: 100 000):', Markup.keyboard(['❌ Bekor qilish']).resize()); 
+    } else {
+        return ctx.reply("Iltimos, pastdagi tugmalardan birini tanlang.");
     }
   }
   if (session.step === 'AMOUNT') {
@@ -350,7 +351,6 @@ bot.on(['text', 'voice'], async (ctx) => {
 
 // --- HARD LIMIT SUMMARY ---
 async function showSummary(ctx, session) {
-  // Avval byudjetni tekshiramiz
   ctx.reply('⏳ Limitlar tekshirilmoqda...');
   const budget = await getBudgetStatus(session.branch, session.category, session.amount);
 
@@ -358,14 +358,14 @@ async function showSummary(ctx, session) {
       // LIMIT TUGAGAN BO'LSA - HARD STOP (BLOKLASH)
       const rejectMsg = `❌ *LIMITDAN OSHIB KETDI!*\n\nSiz ushbu xarajatni tasdiqqa yubora olmaysiz, chunki belgilangan oylik limit tugagan.\n${budget.msg}\n\nIltimos, ruxsat olish uchun *Mr. Karim* (@KarimboyXolmirzayev) bilan bog'laning. U kishi ushbu tizim va limitlar haqida xabardorlar.`;
       
-      delete userSessions[ctx.from.id]; // Sessiyani tozalab tashlaymiz
+      delete userSessions[ctx.from.id]; 
       return ctx.reply(rejectMsg, {
           parse_mode: 'Markdown',
           ...Markup.keyboard(branches, { columns: 2 }).resize()
       });
   }
 
-  // AGAR LIMIT YETARLI BO'LSA - NORMAL TASDIQLASH OYNASI
+  // LIMIT YETARLI BO'LSA
   const formattedAmount = Number(session.amount).toLocaleString('en-US');
   let msg = `⚠️ *Menejerga yuborishdan oldin tekshiring:*\n\n📍 Filial: ${session.branch}\n📂 Kategoriya: ${session.category}\n💰 Summa: ${formattedAmount} UZS\n📝 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}\n💳 To'lov: ${session.payType} (${session.payDetail})\n${budget.msg}`;
   
@@ -407,8 +407,7 @@ bot.action('submit', async (ctx) => {
       'Priority': session.priority
     });
     
-    // Menejerga bildirishnoma (limit oshib ketgani haqidagi ogohlantirishsiz, chunki xodim shu joygacha yetib kelgan bo'lsa limit bor degani)
-    const managerMsg = await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}`, {
+    await bot.telegram.sendMessage(MANAGER_ID, `🏢 *Yangi so'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n📂 Kategoriya: ${session.category}\n💵 Summa: ${Number(session.amount).toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority}`, {
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
           [Markup.button.callback('✅ Tasdiqlash (Qaror)', `decide_${row.rowNumber}`)], 
