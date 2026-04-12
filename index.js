@@ -19,7 +19,7 @@ const auth = new JWT({
 });
 const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
-// Memory state for user conversations
+// Memory state for user conversations (Fixes loop bugs)
 const userSessions = {};
 
 // ==========================================
@@ -61,7 +61,7 @@ function cleanPriority(priorityStr) {
   return priorityStr.split('(')[0].trim(); 
 }
 
-// Helper to calculate total spent this month for a specific branch/category
+// Helper to calculate total spent THIS MONTH for a specific branch/category
 async function getMonthlySpent(expenseSheet, branch, category = null) {
   const expenseRows = await expenseSheet.getRows();
   const now = new Date(new Date().getTime() + (5 * 60 * 60 * 1000)); 
@@ -85,7 +85,7 @@ async function getMonthlySpent(expenseSheet, branch, category = null) {
 }
 
 // ==========================================
-// ADVANCED BUDGET ENGINE
+// ADVANCED BUDGET ENGINE (Manager Report)
 // ==========================================
 async function getDoubleBudgetWarning(branch, category, amountStr) {
   try {
@@ -100,26 +100,26 @@ async function getDoubleBudgetWarning(branch, category, amountStr) {
     // 1. Audit Branch Total 
     const branchBudgetRow = budgetRows.find(r => r.get('Branch') === branch && (!r.get('Category') || r.get('Category').trim() === ''));
     const branchSpent = await getMonthlySpent(expenseSheet, branch);
-    let branchMsg = "ℹ️ Filial limiti belgilanmagan.";
+    let branchMsg = "ℹ️ Umumiy filial limiti belgilanmagan.";
     if (branchBudgetRow) {
       const bLimit = parseSafeInt(branchBudgetRow.get('Monthly Limit'));
       branchMsg = (branchSpent + requested > bLimit) 
-        ? `🔴 *Filial Limiti o'tdi!* (${branchSpent.toLocaleString()} / ${bLimit.toLocaleString()})` 
+        ? `🔴 *UMUMIY FILIAL LIMITI O'TDI!* (${branchSpent.toLocaleString()} / ${bLimit.toLocaleString()})` 
         : `✅ Filial Zaxirasi: ${(bLimit - (branchSpent + requested)).toLocaleString()} UZS`;
     }
 
     // 2. Audit Specific Category
     const catBudgetRow = budgetRows.find(r => r.get('Branch') === branch && r.get('Category') === category);
     const catSpent = await getMonthlySpent(expenseSheet, branch, category);
-    let catMsg = "ℹ️ Kategoriya limiti belgilanmagan.";
+    let catMsg = `ℹ️ ${category} limiti belgilanmagan.`;
     if (catBudgetRow) {
       const cLimit = parseSafeInt(catBudgetRow.get('Monthly Limit'));
       catMsg = (catSpent + requested > cLimit) 
-        ? `🔴 *KATEGORIYA LIMITI O'TDI!* (${catSpent.toLocaleString()} / ${cLimit.toLocaleString()})` 
-        : `✅ Kategoriya Zaxirasi: ${(cLimit - (catSpent + requested)).toLocaleString()} UZS`;
+        ? `🔴 *${category.toUpperCase()} LIMITI O'TDI!* (${catSpent.toLocaleString()} / ${cLimit.toLocaleString()})` 
+        : `✅ ${category} Zaxirasi: ${(cLimit - (catSpent + requested)).toLocaleString()} UZS`;
     }
 
-    return `\n\n📊 *Budjet Nazorati:*\n${branchMsg}\n${catMsg}`;
+    return `\n\n📊 *Budjet Nazorati (${branch}):*\n${branchMsg}\n${catMsg}`;
   } catch (e) { return '\n\n⚠️ *Budjetni hisoblashda xatolik yuz berdi.*'; }
 }
 
@@ -375,26 +375,24 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
       const budgetRows = await budgetSheet.getRows();
       const requested = session.amount;
 
-      // 1. CALCULATE CUMULATIVE CATEGORY SPENT
+      // --- HARD GATE 1: Check Specific CATEGORY Limit First ---
       const catSpent = await getMonthlySpent(expenseSheet, session.branch, session.category);
       const cLimitRow = budgetRows.find(r => r.get('Branch') === session.branch && r.get('Category') === session.category);
       const cLimitValue = cLimitRow ? parseSafeInt(cLimitRow.get('Monthly Limit')) : Infinity;
 
-      // HARD GATE 1: Blocks if (Already Spent + New Request) > Category Limit
       if ((catSpent + requested) > cLimitValue) {
-        await ctx.editMessageText(`❌ *RAD ETILDI!*\n\nBu summa joriy oy uchun **${session.category}** kategoriya limitidan oshib ketdi.\n\nLimit: ${cLimitValue.toLocaleString()} UZS\nIshlatildi (shu oyni qo'shganda): ${(catSpent + requested).toLocaleString()} UZS\nIltimos rahbariyat bilan bog'laning.`);
+        await ctx.editMessageText(`❌ *RAD ETILDI!*\n\nBu summa joriy oy uchun **${session.branch}** filialidagi **${session.category}** limiti miqdoridan oshib ketdi.\n\nLimit: ${cLimitValue.toLocaleString()} UZS\nIshlatildi: ${(catSpent + requested).toLocaleString()} UZS\nIltimos, rahbariyat bilan bog'laning.`);
         delete userSessions[userId];
         return; 
       }
 
-      // 2. CALCULATE CUMULATIVE BRANCH SPENT
+      // --- HARD GATE 2: Check Overall BRANCH Limit ---
       const branchSpent = await getMonthlySpent(expenseSheet, session.branch);
       const bLimitRow = budgetRows.find(r => r.get('Branch') === session.branch && (!r.get('Category') || r.get('Category').trim() === ''));
       const bLimitValue = bLimitRow ? parseSafeInt(bLimitRow.get('Monthly Limit')) : Infinity;
 
-      // HARD GATE 2: Blocks if (Already Spent + New Request) > Overall Branch Limit
       if ((branchSpent + requested) > bLimitValue) {
-        await ctx.editMessageText(`❌ *RAD ETILDI!*\n\nBu summa joriy oy uchun umumiy **Filial** limitidan oshib ketdi.\n\nLimit: ${bLimitValue.toLocaleString()} UZS\nIshlatildi (shu oyni qo'shganda): ${(branchSpent + requested).toLocaleString()} UZS\nIltimos rahbariyat bilan bog'laning.`);
+        await ctx.editMessageText(`❌ *RAD ETILDI!*\n\nBu summa joriy oy uchun umumiy **${session.branch}** filial limitidan oshib ketdi.\n\nLimit: ${bLimitValue.toLocaleString()} UZS\nIshlatildi: ${(branchSpent + requested).toLocaleString()} UZS\nIltimos, rahbariyat bilan bog'laning.`);
         delete userSessions[userId];
         return; 
       }
@@ -413,12 +411,13 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Priority': session.priority
       });
 
-      // Get Warning & Button Layout
+      // Get Warning & Button Layout for Manager
       const budgetAudit = await getDoubleBudgetWarning(session.branch, session.category, session.amount);
       const buttons = [];
       
+      // Fallback protection: if it's red for any reason, hide approve button
       if (budgetAudit.includes('🔴')) {
-        buttons.push([Markup.button.callback('❌ Rad etish (Limit oshilgan)', `rej_${row.rowNumber}`)]);
+        buttons.push([Markup.button.callback('❌ Rad etish (Limit xatosi)', `rej_${row.rowNumber}`)]);
       } else {
         buttons.push([Markup.button.callback('✅ Tasdiqlash (Reja)', `decide_${row.rowNumber}`)]);
         buttons.push([Markup.button.callback('❌ Rad etish', `rej_${row.rowNumber}`)]);
