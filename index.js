@@ -222,7 +222,6 @@ bot.hears(['📊 Hisobot (Report)', '📈 Umumiy Hisobot'], async (ctx) => {
   }
 });
 
-// Yaxshilangan "Kutilayotgan" (Waiting) qismi: Har bir so'rovga tugma va nusxalanadigan karta qo'shildi
 bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
   // UPDATED: Check array
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
@@ -234,30 +233,26 @@ bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
     
     if (waiting.length === 0) return ctx.reply("✅ Kutilayotgan to'lovlar yo'q.");
     
+    let msg = `⏳ *Kutilayotgan To'lovlar ro'yxati*\n━━━━━━━━━━━━━━━\n`;
     let totalWait = 0;
-    waiting.forEach(r => totalWait += parseSafeInt(r.get('Amount')));
-
-    await ctx.reply(`⏳ *Kutilayotgan To'lovlar ro'yxati*\n━━━━━━━━━━━━━━━\n💰 Jami kutishda: ${totalWait.toLocaleString('en-US')} UZS`, { parse_mode: 'Markdown' });
-
-    for (let r of waiting) {
+    let buttons = [];
+    
+    waiting.forEach(r => {
       const amt = parseSafeInt(r.get('Amount')); 
-      const payDetail = r.get('Payment Detail');
+      totalWait += amt;
       const isCard = r.get('Payment Type') === 'Karta';
+      const payDet = r.get('Payment Detail');
+      const fmtDet = isCard ? `\`${payDet}\`` : payDet;
       
-      // Karta raqami nusxalashga qulay bo'lishi uchun markdown code orqali o'raldi
-      const formattedDetail = isCard ? `\`${payDetail}\`` : payDetail;
-
-      let msg = `🗓 Sana: ${r.get('Scheduled Date')}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 To'lov: ${r.get('Payment Type')} (${formattedDetail})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n*ID: ${r.rowNumber}*`;
+      msg += `🗓 Sana: ${r.get('Scheduled Date')}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 ${r.get('Payment Type')} (${fmtDet})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n`;
       
-      await ctx.reply(msg, { 
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('💳 Chek yuborish / To\'lash', `paynow_${r.rowNumber}`)]
-        ])
-      });
-    }
+      buttons.push([Markup.button.callback(`💳 To'lash (ID: ${r.rowNumber})`, `paynow_${r.rowNumber}`)]);
+    });
+    
+    msg += `━━━━━━━━━━━━━━━\n💰 Jami: ${totalWait.toLocaleString('en-US')} UZS`;
+    ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
   } catch (e) { 
-    ctx.reply('❌ Xatolik yuz berdi.'); 
+    ctx.reply('❌ Xatolik.'); 
   }
 });
 
@@ -307,13 +302,13 @@ bot.on('photo', async (ctx) => {
         ...Markup.inlineKeyboard([[Markup.button.callback('✅ Qabul qildim', `staffconfirm_${rowNum}`)]])
       });
 
-      // Guruhga chek yuborish qismi (MAINTENANCE_GROUP_ID mavjud bo'lsa)
+      // Forward cheque to maintenance group
       const groupMsgId = row.get('GroupMsgId');
       if (MAINTENANCE_GROUP_ID && groupMsgId) {
           await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, ctx.message.photo[0].file_id, {
               reply_to_message_id: parseInt(groupMsgId),
               caption: `✅ Procurement menejer chekni yubordi. Xodim tasdig'i kutilmoqda...`
-          }).catch(err => console.error("Group Cheque Send Error:", err.message));
+          }).catch(()=>{});
       }
 
     } catch (e) { 
@@ -472,7 +467,7 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Status': 'PENDING', 
         '_StaffChatId': userId.toString(), 
         'Priority': session.priority,
-        'GroupMsgId': '' // Placeholder for Group Msg ID update
+        'GroupMsgId': '' // NEW: Placeholder to ensure column gets recognized
       });
 
       // --- NOTIFY MANAGERS ---
@@ -508,7 +503,7 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
             row.set('GroupMsgId', groupPost.message_id.toString());
             await row.save();
           } catch(err) {
-             console.error("GroupMsgId column is missing in Sheets");
+             console.error("GroupMsgId column missing in Sheets");
           }
         }
 
@@ -592,9 +587,15 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
     }
     
     const staffId = row.get('_StaffChatId');
+    
+    // FETCH AND FORMAT PAYMENT DETAILS FOR PERSISTENCY
+    const payType = row.get('Payment Type');
+    const payDetail = row.get('Payment Detail');
+    const formattedDetail = payType === 'Karta' ? `\`${payDetail}\`` : payDetail;
+    const formattedAmount = parseSafeInt(row.get('Amount')).toLocaleString('en-US');
 
     if (action === 'decide') {
-      return ctx.editMessageText(`💸 Qachon to'laysiz?`, Markup.inlineKeyboard([
+      return ctx.editMessageText(`💸 Qachon to'laysiz?\n\n💳 To'lov: ${payType} (${formattedDetail})\n💰 Summa: ${formattedAmount} UZS`, Markup.inlineKeyboard([
         [Markup.button.callback('✅ Hozir To\'lash', `paynow_${rowNum}`)],
         [Markup.button.callback('🗓 Dushanba', `schedD_${rowNum}_1`), Markup.button.callback('🗓 Seshanba', `schedD_${rowNum}_2`)],
         [Markup.button.callback('🗓 Chorshanba', `schedD_${rowNum}_3`), Markup.button.callback('🗓 Payshanba', `schedD_${rowNum}_4`)],
@@ -611,7 +612,7 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await updateGroupMessageStatus(row, true);
 
       await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi! Pul o'tkazilmoqda.`);
-      return ctx.editMessageText(`💸 Hozir to'lash tanlandi.\n**Ushbu xabarga CHEK RASMINI REPLY qiling**.\nID: ${rowNum}`, { parse_mode: 'Markdown' });
+      return ctx.editMessageText(`💸 Hozir to'lash tanlandi.\n\n💳 To'lov: ${payType} (${formattedDetail})\n💰 Summa: ${formattedAmount} UZS\n\n**Ushbu xabarga CHEK RASMINI REPLY qiling**.\nID: ${rowNum}`, { parse_mode: 'Markdown' });
     } 
     
     if (action.startsWith('sched')) {
@@ -627,7 +628,7 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await updateGroupMessageStatus(row, true);
 
       await bot.telegram.sendMessage(staffId, `⏳ Tasdiqlandi. To'lov sanasi: *${d}*`, { parse_mode: 'Markdown' });
-      return ctx.editMessageText(`🗓 ${d} sanasiga rejalashtirildi. Xodim ogohlantirildi.`);
+      return ctx.editMessageText(`🗓 ${d} sanasiga rejalashtirildi. Xodim ogohlantirildi.\n\n💳 To'lov: ${payType} (${formattedDetail})\n💰 Summa: ${formattedAmount} UZS`, { parse_mode: 'Markdown' });
     } 
     
     if (action === 'rej') {
