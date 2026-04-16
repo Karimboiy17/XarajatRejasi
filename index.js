@@ -222,6 +222,7 @@ bot.hears(['📊 Hisobot (Report)', '📈 Umumiy Hisobot'], async (ctx) => {
   }
 });
 
+// Yaxshilangan "Kutilayotgan" (Waiting) qismi: Har bir so'rovga tugma va nusxalanadigan karta qo'shildi
 bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
   // UPDATED: Check array
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
@@ -233,19 +234,30 @@ bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
     
     if (waiting.length === 0) return ctx.reply("✅ Kutilayotgan to'lovlar yo'q.");
     
-    let msg = `⏳ *Kutilayotgan To'lovlar ro'yxati*\n━━━━━━━━━━━━━━━\n`;
     let totalWait = 0;
-    
-    waiting.forEach(r => {
+    waiting.forEach(r => totalWait += parseSafeInt(r.get('Amount')));
+
+    await ctx.reply(`⏳ *Kutilayotgan To'lovlar ro'yxati*\n━━━━━━━━━━━━━━━\n💰 Jami kutishda: ${totalWait.toLocaleString('en-US')} UZS`, { parse_mode: 'Markdown' });
+
+    for (let r of waiting) {
       const amt = parseSafeInt(r.get('Amount')); 
-      totalWait += amt;
-      msg += `🗓 Sana: ${r.get('Scheduled Date')}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 ${r.get('Payment Type')} (${r.get('Payment Detail')})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n`;
-    });
-    
-    msg += `━━━━━━━━━━━━━━━\n💰 Jami: ${totalWait.toLocaleString('en-US')} UZS`;
-    ctx.reply(msg, { parse_mode: 'Markdown' });
+      const payDetail = r.get('Payment Detail');
+      const isCard = r.get('Payment Type') === 'Karta';
+      
+      // Karta raqami nusxalashga qulay bo'lishi uchun markdown code orqali o'raldi
+      const formattedDetail = isCard ? `\`${payDetail}\`` : payDetail;
+
+      let msg = `🗓 Sana: ${r.get('Scheduled Date')}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 To'lov: ${r.get('Payment Type')} (${formattedDetail})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n*ID: ${r.rowNumber}*`;
+      
+      await ctx.reply(msg, { 
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('💳 Chek yuborish / To\'lash', `paynow_${r.rowNumber}`)]
+        ])
+      });
+    }
   } catch (e) { 
-    ctx.reply('❌ Xatolik.'); 
+    ctx.reply('❌ Xatolik yuz berdi.'); 
   }
 });
 
@@ -294,6 +306,16 @@ bot.on('photo', async (ctx) => {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([[Markup.button.callback('✅ Qabul qildim', `staffconfirm_${rowNum}`)]])
       });
+
+      // Guruhga chek yuborish qismi (MAINTENANCE_GROUP_ID mavjud bo'lsa)
+      const groupMsgId = row.get('GroupMsgId');
+      if (MAINTENANCE_GROUP_ID && groupMsgId) {
+          await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, ctx.message.photo[0].file_id, {
+              reply_to_message_id: parseInt(groupMsgId),
+              caption: `✅ Procurement menejer chekni yubordi. Xodim tasdig'i kutilmoqda...`
+          }).catch(err => console.error("Group Cheque Send Error:", err.message));
+      }
+
     } catch (e) { 
       ctx.reply("❌ Xatolik yuz berdi."); 
     }
@@ -449,7 +471,8 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Description': `[${session.category}] ${session.description}`,
         'Status': 'PENDING', 
         '_StaffChatId': userId.toString(), 
-        'Priority': session.priority
+        'Priority': session.priority,
+        'GroupMsgId': '' // Placeholder for Group Msg ID update
       });
 
       // --- NOTIFY MANAGERS ---
@@ -480,6 +503,15 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         
         const groupPost = await bot.telegram.sendMessage(MAINTENANCE_GROUP_ID, groupMsg, { parse_mode: 'Markdown' }).catch(err => console.error("Group Alert Error:", err.message));
         
+        if (groupPost) {
+          try {
+            row.set('GroupMsgId', groupPost.message_id.toString());
+            await row.save();
+          } catch(err) {
+             console.error("GroupMsgId column is missing in Sheets");
+          }
+        }
+
         // Forward Voice Note to Group if it exists
         if (session.voiceFileId && groupPost) {
           await bot.telegram.sendVoice(MAINTENANCE_GROUP_ID, session.voiceFileId, { 
@@ -523,6 +555,15 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
     for (let managerId of MANAGER_IDS) {
         await bot.telegram.sendMessage(managerId, `✅ Xodim ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS miqdoridagi pulni olganini tasdiqladi.\n(ID: ${rowNum} - Status: PAID)`).catch(() => {});
     }
+
+    // Guruhga xabar berish (MAINTENANCE_GROUP_ID)
+    const groupMsgId = row.get('GroupMsgId');
+    if (MAINTENANCE_GROUP_ID && groupMsgId) {
+        await bot.telegram.sendMessage(MAINTENANCE_GROUP_ID, `✅ Xodim to'lovni qabul qildi. Tasdiqlandi va yopildi.`, {
+            reply_to_message_id: parseInt(groupMsgId)
+        }).catch(()=>{});
+    }
+
   } catch(e) { 
       console.error(e);
       ctx.answerCbQuery("Xatolik yuz berdi."); 
@@ -567,6 +608,8 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       row.set('Scheduled Date', getTodayStr()); 
       await row.save();
       
+      await updateGroupMessageStatus(row, true);
+
       await bot.telegram.sendMessage(staffId, `✅ To'lov tasdiqlandi! Pul o'tkazilmoqda.`);
       return ctx.editMessageText(`💸 Hozir to'lash tanlandi.\n**Ushbu xabarga CHEK RASMINI REPLY qiling**.\nID: ${rowNum}`, { parse_mode: 'Markdown' });
     } 
@@ -581,6 +624,8 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       row.set('Scheduled Date', d); 
       await row.save();
       
+      await updateGroupMessageStatus(row, true);
+
       await bot.telegram.sendMessage(staffId, `⏳ Tasdiqlandi. To'lov sanasi: *${d}*`, { parse_mode: 'Markdown' });
       return ctx.editMessageText(`🗓 ${d} sanasiga rejalashtirildi. Xodim ogohlantirildi.`);
     } 
@@ -589,6 +634,8 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       row.set('Status', 'REJECTED'); 
       await row.save();
       
+      await updateGroupMessageStatus(row, false);
+
       await bot.telegram.sendMessage(staffId, `❌ So'rov rad etildi.`);
       return ctx.editMessageText('❌ Rad etildi va yopildi.');
     }
@@ -597,6 +644,19 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       ctx.editMessageText("❌ Amalni bajarishda xatolik."); 
   }
 });
+
+// Yordamchi funksiya: Guruhdagi xabarni tahrirlash (Menejer tasdiqladi / Rad etdi)
+async function updateGroupMessageStatus(row, isApproved) {
+  const groupMsgId = row.get('GroupMsgId');
+  if (MAINTENANCE_GROUP_ID && groupMsgId) {
+    const amt = parseSafeInt(row.get('Amount')).toLocaleString('en-US');
+    const statusText = isApproved ? "✅ *Holati: Menejer tasdiqladi*" : "❌ *Holati: Menejer tomonidan rad etildi*";
+    
+    const newMsg = `🛠 **Yangi So'rov Yaratildi**\n\n📍 Filial: ${row.get('Branch')}\n💰 Summa: ${amt} UZS\n👤 So'radi: ${row.get('Staff Name')}\n📝 Sabab: ${row.get('Description')}\n⏰ Muhimligi: ${row.get('Priority')}\n\n${statusText}`;
+    
+    await bot.telegram.editMessageText(MAINTENANCE_GROUP_ID, parseInt(groupMsgId), null, newMsg, { parse_mode: 'Markdown' }).catch(()=>{});
+  }
+}
 
 // ==========================================
 // BOOTSTRAP
