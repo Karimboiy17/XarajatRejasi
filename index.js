@@ -9,8 +9,8 @@ const cron = require('node-cron');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const SHEET_ID = process.env.SHEET_ID;
 
-// UPDATED: Parse multiple managers from a comma-separated string
 const MANAGER_IDS = process.env.MANAGER_CHAT_IDS ? process.env.MANAGER_CHAT_IDS.split(',').map(id => id.trim()) : [];
+const ALLOWED_STAFF_IDS = process.env.ALLOWED_STAFF_IDS ? process.env.ALLOWED_STAFF_IDS.split(',').map(id => id.trim()) : [];
 const CEO_ID = process.env.CEO_CHAT_ID || "NO_CEO"; 
 const MAINTENANCE_GROUP_ID = process.env.MAINTENANCE_GROUP_ID || null;
 
@@ -24,6 +24,28 @@ const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
 // Memory state for user conversations (Fixes loop bugs)
 const userSessions = {};
+
+// ==========================================
+// SECURITY: ALLOWLIST MIDDLEWARE (The Bouncer)
+// ==========================================
+bot.use(async (ctx, next) => {
+  if (!ctx.from) return next();
+  const uid = ctx.from.id.toString();
+  
+  // Allow if they are Staff, Manager, or CEO
+  const isAllowed = ALLOWED_STAFF_IDS.includes(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID;
+  
+  if (!isAllowed) {
+    if (ctx.chat && ctx.chat.type === 'private') {
+        try {
+            await ctx.reply("⛔️ Kechirasiz, sizda ushbu botdan foydalanish huquqi yo'q.\nIltimos, ruxsat olish uchun rahbariyatga murojaat qiling.");
+        } catch (e) {}
+    }
+    return; 
+  }
+  
+  return next();
+});
 
 // ==========================================
 // 2. CONSTANTS & DICTIONARIES
@@ -161,7 +183,6 @@ async function generateGlobalReport() {
 
 bot.command('admin', (ctx) => {
   const uid = ctx.from.id.toString();
-  // UPDATED: Check array
   if (MANAGER_IDS.includes(uid)) {
     return ctx.reply('👨‍💼 Procurement Manager Paneli:', Markup.keyboard([
         ['📊 Hisobot (Report)', '⏳ Kutilayotgan (Waiting)'], 
@@ -176,7 +197,6 @@ bot.command('admin', (ctx) => {
 
 bot.hears(['💸 Cashflow', '💸 Cashflow Forecast'], async (ctx) => {
   const uid = ctx.from.id.toString();
-  // UPDATED: Check array
   if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID) return;
   
   try {
@@ -211,7 +231,6 @@ bot.hears(['💸 Cashflow', '💸 Cashflow Forecast'], async (ctx) => {
 
 bot.hears(['📊 Hisobot (Report)', '📈 Umumiy Hisobot'], async (ctx) => {
   const uid = ctx.from.id.toString();
-  // UPDATED: Check array
   if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID) return;
   
   try { 
@@ -223,7 +242,6 @@ bot.hears(['📊 Hisobot (Report)', '📈 Umumiy Hisobot'], async (ctx) => {
 });
 
 bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
-  // UPDATED: Check array
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
   
   try {
@@ -267,7 +285,6 @@ cron.schedule('0 9 * * *', async () => {
     const dueToday = rows.filter(r => r.get('Status') === 'SCHEDULED' && r.get('Scheduled Date') === todayStr);
 
     for (let row of dueToday) {
-      // UPDATED: Loop through all managers
       for (let managerId of MANAGER_IDS) {
         await bot.telegram.sendMessage(managerId, `⏰ *ESLATMA: Bugun to'lov qilinishi kerak!*\n\n📍 ${row.get('Branch')}\n💵 ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS\n💳 To'lov: ${row.get('Payment Type')} (${row.get('Payment Detail')})\n📝 ${row.get('Description')}\n\n*To'lovni amalga oshirgach, ushbu xabarga CHEK RASMINI REPLY qilib yuboring.*\nID: ${row.rowNumber}`, { parse_mode: 'Markdown' }).catch(() => {});
       }
@@ -278,7 +295,6 @@ cron.schedule('0 9 * * *', async () => {
 }, { scheduled: true, timezone: "Asia/Tashkent" });
 
 bot.on('photo', async (ctx) => {
-  // UPDATED: Check array
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return; 
   
   const reply = ctx.message.reply_to_message;
@@ -467,7 +483,7 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
         'Status': 'PENDING', 
         '_StaffChatId': userId.toString(), 
         'Priority': session.priority,
-        'GroupMsgId': '' // NEW: Placeholder to ensure column gets recognized
+        'GroupMsgId': '' 
       });
 
       // --- NOTIFY MANAGERS ---
@@ -483,7 +499,6 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
 
       const managerMsg = `🏢 *Yangi So'rov*\n📍 Filial: ${session.branch}\n👤 Kimdan: ${ctx.from.first_name}\n💵 Summa: ${session.amount.toLocaleString('en-US')} UZS\n💳 To'lov: ${session.payType} (${session.payDetail})\n💬 Sabab: ${session.description}\n⏰ Muhimligi: ${session.priority} ${budgetAudit}`;
 
-      // UPDATED: Loop through all managers to send the notification and voice file
       for (let managerId of MANAGER_IDS) {
           await bot.telegram.sendMessage(managerId, managerMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
           
@@ -507,7 +522,6 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
           }
         }
 
-        // Forward Voice Note to Group if it exists
         if (session.voiceFileId && groupPost) {
           await bot.telegram.sendVoice(MAINTENANCE_GROUP_ID, session.voiceFileId, { 
             reply_to_message_id: groupPost.message_id 
@@ -546,12 +560,10 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
     
     await ctx.editMessageCaption('✅ *PUL QABUL QILINDI VA YOPILDI.*', { parse_mode: 'Markdown' });
     
-    // UPDATED: Notify all managers
     for (let managerId of MANAGER_IDS) {
         await bot.telegram.sendMessage(managerId, `✅ Xodim ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS miqdoridagi pulni olganini tasdiqladi.\n(ID: ${rowNum} - Status: PAID)`).catch(() => {});
     }
 
-    // Guruhga xabar berish (MAINTENANCE_GROUP_ID)
     const groupMsgId = row.get('GroupMsgId');
     if (MAINTENANCE_GROUP_ID && groupMsgId) {
         await bot.telegram.sendMessage(MAINTENANCE_GROUP_ID, `✅ Xodim to'lovni qabul qildi. Tasdiqlandi va yopildi.`, {
@@ -569,7 +581,6 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
 // 10. MANAGER APPROVAL ACTIONS
 // ==========================================
 bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async (ctx) => {
-  // UPDATED: Check array
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return ctx.answerCbQuery("Sizda huquq yo'q."); 
   
   const [action, rowNum, param] = [ctx.match[1], ctx.match[2], ctx.match[3]];
@@ -581,14 +592,12 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
     
     if (!row) return ctx.editMessageText("❌ Xatolik: Qator topilmadi.");
 
-    // UPDATED: Collision protection
     if (['decide', 'rej'].includes(action) && row.get('Status') !== 'PENDING') {
         return ctx.editMessageText("⚠️ Boshqa menejer tomonidan ko'rib chiqilgan (Already processed).");
     }
     
     const staffId = row.get('_StaffChatId');
     
-    // FETCH AND FORMAT PAYMENT DETAILS FOR PERSISTENCY
     const payType = row.get('Payment Type');
     const payDetail = row.get('Payment Detail');
     const formattedDetail = payType === 'Karta' ? `\`${payDetail}\`` : payDetail;
