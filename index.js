@@ -247,30 +247,38 @@ bot.hears('⏳ Kutilayotgan (Waiting)', async (ctx) => {
   try {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
-    const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED');
     
-    if (waiting.length === 0) return ctx.reply("✅ Kutilayotgan to'lovlar yo'q.");
+    // Ham SCHEDULED, ham PENDING holatdagilarni olamiz
+    const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED' || r.get('Status') === 'PENDING');
     
-    let msg = `⏳ *Kutilayotgan To'lovlar ro'yxati*\n━━━━━━━━━━━━━━━\n`;
+    if (waiting.length === 0) return ctx.reply("✅ Hozircha kutilayotgan yoki tasdiqlanmagan so'rovlar yo'q.");
+    
+    let msg = `⏳ *TASDIQLANMAGAN VA KUTILAYOTGANLAR*\n━━━━━━━━━━━━━━━\n`;
     let totalWait = 0;
     let buttons = [];
     
     waiting.forEach(r => {
       const amt = parseSafeInt(r.get('Amount')); 
+      const status = r.get('Status');
       totalWait += amt;
+      
+      const statusEmoji = status === 'PENDING' ? '🟡 [KUTILMOQDA]' : '🗓 [TASDIQLANGAN]';
       const isCard = r.get('Payment Type') === 'Karta';
       const payDet = r.get('Payment Detail');
       const fmtDet = isCard ? `\`${payDet}\`` : payDet;
       
-      msg += `🗓 Sana: ${r.get('Scheduled Date')}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 ${r.get('Payment Type')} (${fmtDet})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n`;
+      msg += `${statusEmoji}\n📍 ${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n💳 ${r.get('Payment Type')} (${fmtDet})\n📝 ${r.get('Description')} [${cleanPriority(r.get('Priority'))}]\n\n`;
       
-      buttons.push([Markup.button.callback(`💳 To'lash (ID: ${r.rowNumber})`, `paynow_${r.rowNumber}`)]);
+      // Faqat Scheduled bo'lganlar uchun "To'lash" tugmasini chiqaramiz
+      if (status === 'SCHEDULED') {
+        buttons.push([Markup.button.callback(`💳 To'lash (ID: ${r.rowNumber})`, `paynow_${r.rowNumber}`)]);
+      }
     });
     
     msg += `━━━━━━━━━━━━━━━\n💰 Jami: ${totalWait.toLocaleString('en-US')} UZS`;
     ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
   } catch (e) { 
-    ctx.reply('❌ Xatolik.'); 
+    ctx.reply('❌ Ma\'lumotni yuklashda xatolik yuz berdi.'); 
   }
 });
 
