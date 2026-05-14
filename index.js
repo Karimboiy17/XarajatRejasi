@@ -566,6 +566,8 @@ bot.action(/^selbranch_(.+)$/, async (ctx) => {
     const idx = session.selectedBranches.indexOf(val);
     if (idx > -1) session.selectedBranches.splice(idx, 1);
     else session.selectedBranches.push(val);
+    // Individual tanlaganda allBranchesSelected ni reset qilish
+    session.allBranchesSelected = false;
   }
 
   const sel = session.selectedBranches;
@@ -624,6 +626,8 @@ bot.action(/^selcat_(.+)$/, async (ctx) => {
       if (ci > -1) session.selectedCategories.splice(ci, 1);
       else session.selectedCategories.push(fullCat);
     }
+    // Individual tanlaganda allCatsSelected ni reset qilish
+    session.allCatsSelected = false;
   }
 
   const sel = session.selectedCategories || [];
