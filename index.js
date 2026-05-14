@@ -488,7 +488,7 @@ async function buildCategoryButtons(selected) {
 bot.action(/^selbranch_(.+)$/, async (ctx) => {
   const uid = ctx.from.id;
   const session = userSessions[uid];
-  if (!session || session.step !== 'USER_ADD_BRANCHES') return ctx.answerCbQuery();
+  if (!session || !['USER_ADD_BRANCHES', 'EDIT_BRANCH'].includes(session.step)) return ctx.answerCbQuery();
   const val = ctx.match[1];
   if (!session.selectedBranches) session.selectedBranches = [];
 
@@ -497,11 +497,27 @@ bot.action(/^selbranch_(.+)$/, async (ctx) => {
     session.allBranchesSelected = true;
   } else if (val === 'done') {
     if (session.selectedBranches.length === 0) return ctx.answerCbQuery('Kamida 1 ta filial tanlang!');
-    // Hammasi tanlangan bo'lsa 'hammasi' saqlash
-    session.newUserBranches = session.allBranchesSelected ? 'hammasi' : session.selectedBranches.join(', ');
+    const branchStr = session.allBranchesSelected ? 'hammasi' : session.selectedBranches.join(', ');
+
+    // EDIT_BRANCH — mavjud xodimni yangilash
+    if (session.step === 'EDIT_BRANCH') {
+      try {
+        const user = await getUserData(session.editUserId);
+        if (user) {
+          user.set('Branches', branchStr);
+          await user.save();
+          await ctx.editMessageText('Filiallar yangilandi: ' + branchStr);
+        }
+      } catch(e) { await ctx.editMessageText('Xatolik.'); }
+      delete userSessions[uid];
+      return ctx.answerCbQuery('Saqlandi!');
+    }
+
+    // USER_ADD_BRANCHES — yangi xodim qo'shish
+    session.newUserBranches = branchStr;
     session.step = 'USER_ADD_CATEGORIES';
     session.selectedCategories = [];
-    await ctx.editMessageText('Filiallar saqlandi: ' + session.newUserBranches + '\n\nEndi kategoriyalarni tanlang:',
+    await ctx.editMessageText('Filiallar saqlandi: ' + branchStr + '\n\nEndi kategoriyalarni tanlang:',
       await buildCategoryButtons([]));
     return ctx.answerCbQuery();
   } else {
@@ -521,7 +537,7 @@ bot.action(/^selbranch_(.+)$/, async (ctx) => {
 bot.action(/^selcat_(.+)$/, async (ctx) => {
   const uid = ctx.from.id;
   const session = userSessions[uid];
-  if (!session || session.step !== 'USER_ADD_CATEGORIES') return ctx.answerCbQuery();
+  if (!session || !['USER_ADD_CATEGORIES', 'EDIT_CAT'].includes(session.step)) return ctx.answerCbQuery();
   const val = ctx.match[1];
   const allCats = await getActiveCategories();
   if (!session.selectedCategories) session.selectedCategories = [];
@@ -532,6 +548,22 @@ bot.action(/^selcat_(.+)$/, async (ctx) => {
   } else if (val === 'done') {
     if (session.selectedCategories.length === 0) return ctx.answerCbQuery('Kamida 1 ta kategoriya tanlang!');
     const catStr = session.allCatsSelected ? 'hammasi' : session.selectedCategories.join(', ');
+
+    // EDIT_CAT — mavjud xodimni yangilash
+    if (session.step === 'EDIT_CAT') {
+      try {
+        const user = await getUserData(session.editUserId);
+        if (user) {
+          user.set('Categories', catStr);
+          await user.save();
+          await ctx.editMessageText('Kategoriyalar yangilandi: ' + (catStr.length > 80 ? catStr.substring(0,80)+'...' : catStr));
+        }
+      } catch(e) { await ctx.editMessageText('Xatolik.'); }
+      delete userSessions[uid];
+      return ctx.answerCbQuery('Saqlandi!');
+    }
+
+    // USER_ADD_CATEGORIES — yangi xodim qo'shish
     const ok = await saveUserData(session.newUserId, session.newUserName, session.newUserRole, session.newUserBranches, catStr);
     await ctx.editMessageText(ok
       ? 'Foydalanuvchi saqlandi!\nID: ' + session.newUserId + '\nIsm: ' + session.newUserName + '\nFiliallar: ' + session.newUserBranches + '\nKategoriyalar: ' + catStr
@@ -854,15 +886,23 @@ bot.on('message', async (ctx) => {
       const sheet = doc.sheetsByTitle['Users'];
       const rows = await sheet.getRows();
       if (!rows.length) return ctx.reply("Hali foydalanuvchi qo'shilmagan.");
-      let msg = `FOYDALANUVCHILAR ROYXATI\n\n`;
-      rows.forEach(r => {
-        msg += `ID: ${r.get('Telegram ID')}\n`;
-        msg += `Ism: ${r.get('Name')}\n`;
-        msg += `Rol: ${r.get('Role')}\n`;
-        msg += `Filiallar: ${r.get('Branches')}\n`;
-        msg += `Kategoriyalar: ${r.get('Categories')}\n\n`;
-      });
-      return ctx.reply(msg);
+
+      // Har bir xodim uchun alohida xabar + Tahrirlash tugmasi
+      for (const r of rows) {
+        const tid = r.get('Telegram ID');
+        const name = r.get('Name');
+        const role = r.get('Role');
+        const branches = r.get('Branches');
+        const cats = r.get('Categories');
+
+        const msg = `👤 ${name}\nID: ${tid}\nRol: ${role}\nFiliallar: ${branches}\nKategoriyalar: ${cats.length > 60 ? cats.substring(0,60)+'...' : cats}`;
+
+        await ctx.reply(msg, Markup.inlineKeyboard([
+          [Markup.button.callback('Filiallarni ozgartirish', 'edit_branch_' + tid)],
+          [Markup.button.callback('Kategoriyalarni ozgartirish', 'edit_cat_' + tid)],
+          [Markup.button.callback('Xodimni ochirish', 'del_user_' + tid)]
+        ]));
+      }
     } catch (e) {
       return ctx.reply('Xatolik.');
     }
@@ -967,6 +1007,104 @@ bot.on('message', async (ctx) => {
 });
 
 // ==========================================
+// ==========================================
+// FOYDALANUVCHI TAHRIRLASH ACTIONS
+// ==========================================
+
+// Filiallarni o'zgartirish
+bot.action(/^edit_branch_(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery();
+  const tid = ctx.match[1];
+  const uid = ctx.from.id;
+
+  userSessions[uid] = {
+    step: 'EDIT_BRANCH',
+    editUserId: tid,
+    selectedBranches: [],
+    allBranchesSelected: false
+  };
+
+  // Hozirgi branch larni olish
+  try {
+    const user = await getUserData(tid);
+    if (user) {
+      const br = user.get('Branches') || '';
+      if (br === 'hammasi') {
+        userSessions[uid].selectedBranches = [...ALL_BRANCHES];
+        userSessions[uid].allBranchesSelected = true;
+      } else {
+        userSessions[uid].selectedBranches = br.split(',').map(b => b.trim()).filter(Boolean);
+      }
+    }
+  } catch(e) {}
+
+  const sel = userSessions[uid].selectedBranches;
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+  await ctx.reply(
+    'Filiallarni tanlang (hozirgi: ' + (sel.length > 0 ? sel.join(', ') : 'hech biri') + '):',
+    buildBranchButtons(sel)
+  );
+  ctx.answerCbQuery();
+});
+
+// Kategoriyalarni o'zgartirish
+bot.action(/^edit_cat_(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery();
+  const tid = ctx.match[1];
+  const uid = ctx.from.id;
+
+  const allCats = await getActiveCategories();
+  userSessions[uid] = {
+    step: 'EDIT_CAT',
+    editUserId: tid,
+    selectedCategories: [],
+    allCatsSelected: false
+  };
+
+  // Hozirgi kategoriyalarni olish
+  try {
+    const user = await getUserData(tid);
+    if (user) {
+      const cats = user.get('Categories') || '';
+      if (cats === 'hammasi') {
+        userSessions[uid].selectedCategories = [...allCats];
+        userSessions[uid].allCatsSelected = true;
+      } else {
+        userSessions[uid].selectedCategories = cats.split(',').map(c => c.trim()).filter(Boolean);
+      }
+    }
+  } catch(e) {}
+
+  const sel = userSessions[uid].selectedCategories;
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+  await ctx.reply(
+    'Kategoriyalarni tanlang (' + (sel.length > 0 ? sel.length + ' ta tanlangan' : 'hech biri') + '):',
+    await buildCategoryButtons(sel)
+  );
+  ctx.answerCbQuery();
+});
+
+// Xodimni o'chirish
+bot.action(/^del_user_(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCbQuery();
+  const tid = ctx.match[1];
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Users'];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.get('Telegram ID') === tid);
+    if (!row) return ctx.answerCbQuery('Topilmadi.');
+    const name = row.get('Name');
+    await row.delete();
+    await ctx.editMessageText('Xodim ' + name + ' o\'chirildi.');
+    ctx.answerCbQuery();
+  } catch(e) {
+    ctx.answerCbQuery('Xatolik.');
+  }
+});
+
+// EDIT_BRANCH va EDIT_CAT uchun selbranch/selcat action larni kengaytirish
+
 // 15. SO'ROV XULOSASI
 // ==========================================
 async function showSummary(ctx, session) {
