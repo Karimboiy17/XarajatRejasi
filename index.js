@@ -199,24 +199,48 @@ async function getActiveCategories() {
 async function addCategory(name) {
   try {
     await doc.loadInfo();
-    let sheet = doc.sheetsByTitle['Categories'];
-    if (!sheet) {
-      sheet = await doc.addSheet({
+
+    // 1. Categories jadvaliga qo'shish
+    let catSheet = doc.sheetsByTitle['Categories'];
+    if (!catSheet) {
+      catSheet = await doc.addSheet({
         title: 'Categories',
         headerValues: ['Name', 'Active', 'Created']
       });
     }
-    const rows = await sheet.getRows();
-    const exists = rows.find(r => r.get('Name') === name);
+    const catRows = await catSheet.getRows();
+    const exists = catRows.find(r => r.get('Name') === name);
     if (exists) return false; // allaqachon bor
 
-    await sheet.addRow({
+    await catSheet.addRow({
       'Name': name,
       'Active': 'TRUE',
       'Created': new Date().toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' })
     });
+
+    // 2. Budgets jadvaliga har filial uchun limit=0 qo'shish
+    let budgetSheet = doc.sheetsByTitle['Budgets'];
+    if (budgetSheet) {
+      const budgetRows = await budgetSheet.getRows();
+      for (const branch of ALL_BRANCHES) {
+        const branchWithEmoji = '📍 ' + branch;
+        // Bu filial + kategoriya allaqachon bormi tekshirish
+        const alreadyExists = budgetRows.find(r =>
+          r.get('Branch') === branchWithEmoji && r.get('Category') === name
+        );
+        if (!alreadyExists) {
+          await budgetSheet.addRow({
+            'Branch': branchWithEmoji,
+            'Category': name,
+            'Monthly Limit': '0'
+          });
+        }
+      }
+    }
+
     return true;
   } catch (e) {
+    console.error('addCategory error:', e);
     return false;
   }
 }
@@ -224,15 +248,33 @@ async function addCategory(name) {
 async function deleteCategory(name) {
   try {
     await doc.loadInfo();
-    const sheet = doc.sheetsByTitle['Categories'];
-    if (!sheet) return false;
-    const rows = await sheet.getRows();
-    const row = rows.find(r => r.get('Name') === name);
-    if (!row) return false;
-    row.set('Active', 'FALSE');
-    await row.save();
+
+    // 1. Categories jadvalida Active=FALSE qilish
+    const catSheet = doc.sheetsByTitle['Categories'];
+    if (!catSheet) return false;
+    const catRows = await catSheet.getRows();
+    const catRow = catRows.find(r => r.get('Name') === name);
+    if (!catRow) return false;
+    catRow.set('Active', 'FALSE');
+    await catRow.save();
+
+    // 2. Budgets jadvalidan bu kategoriya qatorlarini o'chirish (limit=0 bo'lganlarni)
+    const budgetSheet = doc.sheetsByTitle['Budgets'];
+    if (budgetSheet) {
+      const budgetRows = await budgetSheet.getRows();
+      for (const r of budgetRows) {
+        if (r.get('Category') === name) {
+          // Faqat limit 0 bo'lsa o'chirish (agar limit belgilangan bo'lsa qoldirish)
+          if (parseSafeInt(r.get('Monthly Limit')) === 0) {
+            await r.delete();
+          }
+        }
+      }
+    }
+
     return true;
   } catch (e) {
+    console.error('deleteCategory error:', e);
     return false;
   }
 }
