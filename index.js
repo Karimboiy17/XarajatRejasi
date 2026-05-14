@@ -494,9 +494,11 @@ bot.action(/^selbranch_(.+)$/, async (ctx) => {
 
   if (val === 'all') {
     session.selectedBranches = [...ALL_BRANCHES];
+    session.allBranchesSelected = true;
   } else if (val === 'done') {
     if (session.selectedBranches.length === 0) return ctx.answerCbQuery('Kamida 1 ta filial tanlang!');
-    session.newUserBranches = session.selectedBranches.join(', ');
+    // Hammasi tanlangan bo'lsa 'hammasi' saqlash
+    session.newUserBranches = session.allBranchesSelected ? 'hammasi' : session.selectedBranches.join(', ');
     session.step = 'USER_ADD_CATEGORIES';
     session.selectedCategories = [];
     await ctx.editMessageText('Filiallar saqlandi: ' + session.newUserBranches + '\n\nEndi kategoriyalarni tanlang:',
@@ -526,9 +528,10 @@ bot.action(/^selcat_(.+)$/, async (ctx) => {
 
   if (val === 'all') {
     session.selectedCategories = [...allCats];
+    session.allCatsSelected = true;
   } else if (val === 'done') {
     if (session.selectedCategories.length === 0) return ctx.answerCbQuery('Kamida 1 ta kategoriya tanlang!');
-    const catStr = session.selectedCategories.join(', ');
+    const catStr = session.allCatsSelected ? 'hammasi' : session.selectedCategories.join(', ');
     const ok = await saveUserData(session.newUserId, session.newUserName, session.newUserRole, session.newUserBranches, catStr);
     await ctx.editMessageText(ok
       ? 'Foydalanuvchi saqlandi!\nID: ' + session.newUserId + '\nIsm: ' + session.newUserName + '\nFiliallar: ' + session.newUserBranches + '\nKategoriyalar: ' + catStr
