@@ -727,9 +727,10 @@ bot.on('message', async (ctx) => {
   const text = ctx.message.text || '';
   const voice = ctx.message.voice;
 
-  // Admin tugmachalarini o'tkazib yuborish
+  // Admin tugmachalarini o'tkazib yuborish — faqat aniq moslik
   const adminTexts = ['Hisobot', 'Kutilayotgan', 'Cashflow', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar'];
-  if (adminTexts.some(t => text.includes(t))) return;
+  // exact match — "Foydalanuvchilar royxati" ni bloklamasin
+  if (adminTexts.includes(text)) return;
 
   // Bekor qilish
   if (text === 'Bekor qilish' || text === '/start') {
