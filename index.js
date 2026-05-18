@@ -467,7 +467,7 @@ async function generateGlobalReport(monthFilter) {
 
   const periodLabel = monthFilter === 'all' ? 'Barcha vaqt' : getMonthName(monthFilter);
 
-  let msg = 'MOLIYA HISOBOTI — ' + periodLabel + '\n';
+  let msg = 'MOLIYA HISOBOTI - ' + periodLabel + '\n';
   msg += '=========================\n';
   msg += 'Tolangan: ' + grandTotal.toLocaleString('en-US') + ' UZS\n';
   msg += 'Kutilayotgan: ' + pending.length + ' ta (' + pending.reduce((s,r) => s + parseSafeInt(r.get('Amount')), 0).toLocaleString('en-US') + ' UZS)\n';
@@ -778,23 +778,41 @@ bot.hears('Kutilayotgan', async (ctx) => {
     const waiting = rows.filter(r => ['SCHEDULED', 'PENDING'].includes(r.get('Status')));
     if (!waiting.length) return ctx.reply("Kutilayotgan tolovlar yoq.");
 
-    let msg = `KUTILAYOTGANLAR\n\n`;
     let total = 0;
-    let buttons = [];
+    waiting.forEach(r => { total += parseSafeInt(r.get('Amount')); });
+    await ctx.reply('KUTILAYOTGANLAR - ' + waiting.length + ' ta sorov\nJami: ' + total.toLocaleString('en-US') + ' UZS');
 
-    waiting.forEach(r => {
+    for (const r of waiting) {
       const amt = parseSafeInt(r.get('Amount'));
-      total += amt;
-      const status = r.get('Status') === 'PENDING' ? '[KUTILMOQDA]' : '[TASDIQLANGAN]';
-      msg += `${status}\n${r.get('Branch')} - ${amt.toLocaleString('en-US')} UZS\n${r.get('Description')}\n\n`;
-      if (r.get('Status') === 'SCHEDULED') {
-        buttons.push([Markup.button.callback(`Tolash (ID: ${r.rowNumber})`, `paynow_${r.rowNumber}`)]);
-      }
-    });
+      const isPending = r.get('Status') === 'PENDING';
+      const schedDate = r.get('Scheduled Date') ? ' | ' + r.get('Scheduled Date') : '';
+      const statusLabel = isPending ? 'KUTILMOQDA' : ('TASDIQLANGAN' + schedDate);
+      const payType = r.get('Payment Type') || '';
+      const payDetail = r.get('Payment Detail') || '';
 
-    msg += `Jami: ${total.toLocaleString('en-US')} UZS`;
-    ctx.reply(msg, Markup.inlineKeyboard(buttons));
+      const msg =
+        '[' + statusLabel + ']\n' +
+        (r.get('Branch') || '') + ' | ' + (r.get('Staff Name') || '') + '\n' +
+        amt.toLocaleString('en-US') + ' UZS | ' + payType + ' (' + payDetail + ')\n' +
+        (r.get('Description') || '') + '\n' +
+        'ID: ' + r.rowNumber;
+
+      let btns = [];
+      if (isPending) {
+        btns = [
+          [Markup.button.callback('Tasdiqlash', 'decide_' + r.rowNumber)],
+          [Markup.button.callback('Rad etish', 'rej_' + r.rowNumber)]
+        ];
+      } else {
+        btns = [
+          [Markup.button.callback('Tolash (Chek reply qiling)', 'paynow_' + r.rowNumber)],
+          [Markup.button.callback('Rad etish', 'rej_' + r.rowNumber)]
+        ];
+      }
+      await ctx.reply(msg, Markup.inlineKeyboard(btns));
+    }
   } catch (e) {
+    console.error(e);
     ctx.reply('Xatolik.');
   }
 });
@@ -855,7 +873,7 @@ bot.on('message', async (ctx) => {
     const brName = session.limitBranch;
     const catName = session.limitCategory || 'Umumiy';
     return ctx.reply(
-      `${brName} — ${catName} uchun oylik limit summasi (faqat raqam):`
+      `${brName} - ${catName} uchun oylik limit summasi (faqat raqam):`
     );
   }
 
@@ -868,7 +886,7 @@ bot.on('message', async (ctx) => {
 
     if (ok) {
       return ctx.reply(
-        `Limit saqlandi!\n${session.limitBranch} — ${session.limitCategory || 'Umumiy'}: ${amount.toLocaleString()} UZS`,
+        `Limit saqlandi!\n${session.limitBranch} - ${session.limitCategory || 'Umumiy'}: ${amount.toLocaleString()} UZS`,
         Markup.keyboard([
           ['Hisobot', 'Kutilayotgan'],
           ['Cashflow', 'Limitlar'],
@@ -941,7 +959,7 @@ bot.on('message', async (ctx) => {
         const branches = r.get('Branches');
         const cats = r.get('Categories');
 
-        const msg = `👤 ${name}\nID: ${tid}\nRol: ${role}\nFiliallar: ${branches}\nKategoriyalar: ${cats.length > 60 ? cats.substring(0,60)+'...' : cats}`;
+        const msg = name + '\nID: ' + tid + '\nRol: ' + role + '\nFiliallar: ' + branches + '\nKategoriyalar: ' + (cats.length > 60 ? cats.substring(0,60)+'...' : cats);
 
         await ctx.reply(msg, Markup.inlineKeyboard([
           [Markup.button.callback('Filiallarni ozgartirish', 'edit_branch_' + tid)],
@@ -1292,34 +1310,57 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
 // ==========================================
 bot.on('photo', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
+
   const reply = ctx.message.reply_to_message;
-  if (reply && reply.text && reply.text.includes('ID:')) {
-    const rowNum = reply.text.split('ID:')[1].trim();
-    try {
-      await doc.loadInfo();
-      const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
-      const row = rows.find(r => r.rowNumber == rowNum);
-      if (!row) return ctx.reply('ID topilmadi.');
+  if (!reply || !reply.text) return;
 
-      row.set('Status', 'CHEQUE_SENT');
-      await row.save();
-      ctx.reply('Chek xodimga tasdiqlash uchun yuborildi!');
+  // ID ni to'g'ri olish — "ID: 123" yoki "ID:123" formatlarini qo'llab-quvvatlash
+  const idMatch = reply.text.match(/ID:\s*(\d+)/);
+  if (!idMatch) return;
+  const rowNum = parseInt(idMatch[1]);
 
-      await bot.telegram.sendPhoto(row.get('_StaffChatId'), ctx.message.photo[0].file_id, {
-        caption: `TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\nSumma: ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS\n\nIltimos, pulni olganingizni tasdiqlang:`,
-        ...Markup.inlineKeyboard([[Markup.button.callback('Qabul qildim', `staffconfirm_${rowNum}`)]])
-      });
+  try {
+    await doc.loadInfo();
+    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+    const row = rows.find(r => r.rowNumber == rowNum);
+    if (!row) return ctx.reply('ID topilmadi. Row: ' + rowNum);
 
-      const groupMsgId = row.get('GroupMsgId');
-      if (MAINTENANCE_GROUP_ID && groupMsgId) {
-        await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, ctx.message.photo[0].file_id, {
-          reply_to_message_id: parseInt(groupMsgId),
-          caption: 'Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...'
-        }).catch(() => {});
-      }
-    } catch (e) {
-      ctx.reply('Xatolik yuz berdi.');
+    const staffChatId = row.get('_StaffChatId');
+    const amount = parseSafeInt(row.get('Amount')).toLocaleString('en-US');
+    const largestPhoto = ctx.message.photo[ctx.message.photo.length - 1];
+
+    // Status yangilash
+    row.set('Status', 'CHEQUE_SENT');
+    await row.save();
+
+    await ctx.reply('Chek xodimga va guruhga yuborildi!');
+
+    // 1. Xodimga chek yuborish
+    if (staffChatId) {
+      await bot.telegram.sendPhoto(staffChatId, largestPhoto.file_id, {
+        caption: 'TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\nSumma: ' + amount + ' UZS\n\nIltimos, pulni olganingizni tasdiqlang:',
+        reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('Qabul qildim', 'staffconfirm_' + rowNum)]
+        ]).reply_markup
+      }).catch(e => console.error('Staff photo error:', e.message));
     }
+
+    // 2. Guruhga chek yuborish
+    const groupMsgId = row.get('GroupMsgId');
+    if (MAINTENANCE_GROUP_ID) {
+      const groupOpts = {
+        caption: 'Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...'
+      };
+      if (groupMsgId && !isNaN(parseInt(groupMsgId))) {
+        groupOpts.reply_to_message_id = parseInt(groupMsgId);
+      }
+      await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, largestPhoto.file_id, groupOpts)
+        .catch(e => console.error('Group photo error:', e.message));
+    }
+
+  } catch (e) {
+    console.error('Photo handler error:', e);
+    ctx.reply('Xatolik yuz berdi: ' + e.message);
   }
 });
 
