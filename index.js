@@ -1433,9 +1433,17 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await updateGroupStatus(row, true);
       await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
 
-      return ctx.editMessageText(
-        'Hozir tolash tanlandi.\nTolov: ' + payType + ' (' + payDetail + ')\nSumma: ' + amount + ' UZS\n\nUshbu xabarga CHEK RASMINI REPLY qilib yuboring.\nID: ' + rowNum
+      // Avval inline xabarni yangilash
+      await ctx.editMessageText('Hozir tolash tanlandi.
+Tolov: ' + payType + ' (' + payDetail + ')
+Summa: ' + amount + ' UZS');
+
+      // Keyin ALOHIDA yangi xabar yuborish — shu xabarga reply qilinadi
+      await bot.telegram.sendMessage(ctx.from.id,
+        'Ushbu xabarga CHEK RASMINI REPLY qilib yuboring.
+ID: ' + rowNum
       );
+      return;
     }
 
     if (action.startsWith('sched')) {
