@@ -1396,3 +1396,20 @@ cron.schedule('0 9 * * *', async () => {
 bot.launch({ dropPendingUpdates: true }).then(() => console.log('✅ IELTS Zone Finance Bot ishga tushdi!'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+// At the very bottom, before bot.launch()
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
+bot.launch({ dropPendingUpdates: true }).then(() => {
+  console.log('✅ Bot started');
+}).catch((err) => {
+  if (err.response?.error_code === 409) {
+    console.error('❌ Another bot instance is running. Kill it first.');
+    process.exit(1);
+  }
+});
