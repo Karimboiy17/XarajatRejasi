@@ -1508,6 +1508,6 @@ cron.schedule('0 9 * * *', async () => {
 // ==========================================
 // ISHGA TUSHIRISH
 // ==========================================
-bot.launch().then(() => console.log('IELTS Zone Finance Bot ishga tushdi!'));
+bot.launch({ dropPendingUpdates: true }).then(() => console.log('IELTS Zone Finance Bot ishga tushdi!'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
