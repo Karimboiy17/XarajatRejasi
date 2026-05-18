@@ -1312,55 +1312,47 @@ bot.on('photo', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
 
   const reply = ctx.message.reply_to_message;
-  if (!reply || !reply.text) return;
+  if (!reply || !reply.text || !reply.text.includes('ID:')) return;
 
-  // ID ni to'g'ri olish — "ID: 123" yoki "ID:123" formatlarini qo'llab-quvvatlash
-  const idMatch = reply.text.match(/ID:\s*(\d+)/);
-  if (!idMatch) return;
-  const rowNum = parseInt(idMatch[1]);
+  const rowNum = reply.text.split('ID:')[1].trim().split('\n')[0].trim();
 
   try {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
     const row = rows.find(r => r.rowNumber == rowNum);
-    if (!row) return ctx.reply('ID topilmadi. Row: ' + rowNum);
+    if (!row) return ctx.reply('ID topilmadi.');
 
     const staffChatId = row.get('_StaffChatId');
     const amount = parseSafeInt(row.get('Amount')).toLocaleString('en-US');
-    const largestPhoto = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
 
-    // Status yangilash
     row.set('Status', 'CHEQUE_SENT');
     await row.save();
 
-    await ctx.reply('Chek xodimga va guruhga yuborildi!');
+    ctx.reply('Chek xodimga tasdiqlash uchun yuborildi!');
 
-    // 1. Xodimga chek yuborish
-    if (staffChatId) {
-      await bot.telegram.sendPhoto(staffChatId, largestPhoto.file_id, {
-        caption: 'TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\nSumma: ' + amount + ' UZS\n\nIltimos, pulni olganingizni tasdiqlang:',
-        reply_markup: Markup.inlineKeyboard([
-          [Markup.button.callback('Qabul qildim', 'staffconfirm_' + rowNum)]
-        ]).reply_markup
-      }).catch(e => console.error('Staff photo error:', e.message));
-    }
-
-    // 2. Guruhga chek yuborish
-    const groupMsgId = row.get('GroupMsgId');
-    if (MAINTENANCE_GROUP_ID) {
-      const groupOpts = {
-        caption: 'Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...'
-      };
-      if (groupMsgId && !isNaN(parseInt(groupMsgId))) {
-        groupOpts.reply_to_message_id = parseInt(groupMsgId);
+    // Xodimga yuborish
+    await bot.telegram.sendPhoto(staffChatId, fileId, {
+      caption: 'TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\nSumma: ' + amount + ' UZS\n\nIltimos, pulni olganingizni tasdiqlang:',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Qabul qildim', callback_data: 'staffconfirm_' + rowNum }
+        ]]
       }
-      await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, largestPhoto.file_id, groupOpts)
-        .catch(e => console.error('Group photo error:', e.message));
+    }).catch(e => console.error('Staff photo error:', e.message));
+
+    // Guruhga yuborish
+    const groupMsgId = row.get('GroupMsgId');
+    if (MAINTENANCE_GROUP_ID && groupMsgId) {
+      await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, fileId, {
+        reply_to_message_id: parseInt(groupMsgId),
+        caption: 'Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...'
+      }).catch(e => console.error('Group photo error:', e.message));
     }
 
   } catch (e) {
     console.error('Photo handler error:', e);
-    ctx.reply('Xatolik yuz berdi: ' + e.message);
+    ctx.reply('Xatolik: ' + e.message);
   }
 });
 
@@ -1440,8 +1432,9 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await row.save();
       await updateGroupStatus(row, true);
       await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
+
       return ctx.editMessageText(
-        `Hozir tolash tanlandi.\nTolov: ${payType} (${payDetail})\nSumma: ${amount} UZS\n\nUshbu xabarga CHEK RASMINI REPLY qiling.\nID: ${rowNum}`
+        'Hozir tolash tanlandi.\nTolov: ' + payType + ' (' + payDetail + ')\nSumma: ' + amount + ' UZS\n\nUshbu xabarga CHEK RASMINI REPLY qilib yuboring.\nID: ' + rowNum
       );
     }
 
