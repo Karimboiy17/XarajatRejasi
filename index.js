@@ -1424,11 +1424,8 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await row.save();
       await updateGroupStatus(row, true);
       await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
-
-      await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
       return ctx.editMessageText(
-        'Hozir tolash tanlandi.\n\nTolov: ' + payType + ' (' + formattedDetail + ')\nSumma: ' + formattedAmount + ' UZS\n\nUshbu xabarga CHEK RASMINI REPLY qiling.\nID: ' + rowNum,
-        { parse_mode: 'Markdown' }
+        'Hozir tolash tanlandi.\n\nTolov: ' + payType + ' (' + payDetail + ')\nSumma: ' + amount + ' UZS\n\nUshbu xabarga CHEK RASMINI REPLY qiling.\nID: ' + rowNum
       );
     }
 
