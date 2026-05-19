@@ -164,7 +164,9 @@ bot.command('admin', (ctx) => {
   if (MANAGER_IDS.includes(uid)) {
     return ctx.reply('Procurement Manager Paneli:', Markup.keyboard([
       ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
-      ['Cashflow']
+      ['Cashflow'],
+      ['Limitlar', 'Kategoriyalar'],
+      ['Foydalanuvchilar']
     ]).resize());
   } else if (uid === CEO_ID) {
     return ctx.reply('CEO Monitoring Paneli:', Markup.keyboard([
@@ -211,24 +213,17 @@ bot.hears(['Hisobot (Report)', 'Umumiy Hisobot'], async (ctx) => {
   } catch (e) { ctx.reply('Xatolik.'); }
 });
 
-// ==========================================
-// KUTILAYOTGAN — HAR BIRIGA TUGMA
-// ==========================================
 bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
   try {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
-    
-    // Ham SCHEDULED, ham PENDING holatdagilarni olamiz
     const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED' || r.get('Status') === 'PENDING');
     if (waiting.length === 0) return ctx.reply("Kutilayotgan yoki tasdiqlanmagan so'rovlar yo'q.");
-
     let total = 0;
     waiting.forEach(r => { total += parseSafeInt(r.get('Amount')); });
     await ctx.reply(`TASDIQLANMAGAN VA KUTILAYOTGANLAR\nJami: ${total.toLocaleString('en-US')} UZS | ${waiting.length} ta sorov`);
 
-    // Har bir so'rov uchun alohida xabar + tugmalar
     for (const r of waiting) {
       const amt = parseSafeInt(r.get('Amount'));
       const status = r.get('Status');
@@ -237,13 +232,8 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
       const payDet = r.get('Payment Detail');
       const schedDate = r.get('Scheduled Date') ? ` | ${r.get('Scheduled Date')}` : '';
       const statusLabel = isPending ? '🟡 KUTILMOQDA' : `🗓 TASDIQLANGAN${schedDate}`;
-
       const msg =
-        `${statusLabel}\n` +
-        `📍 ${r.get('Branch')} | 👤 ${r.get('Staff Name')}\n` +
-        `💰 ${amt.toLocaleString('en-US')} UZS | 💳 ${r.get('Payment Type')} (${payDet})\n` +
-        `📝 ${r.get('Description')}\n` +
-        `🆔 ID: ${r.rowNumber}`;
+        `${statusLabel}\n📍 ${r.get('Branch')} | 👤 ${r.get('Staff Name')}\n💰 ${amt.toLocaleString('en-US')} UZS | 💳 ${r.get('Payment Type')} (${payDet})\n📝 ${r.get('Description')}\n🆔 ID: ${r.rowNumber}`;
 
       let btns = [];
       if (isPending) {
@@ -263,6 +253,25 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
     console.error(e);
     ctx.reply('Xatolik yuz berdi.');
   }
+});
+
+// Admin yangi tugmalari (Yuqoriga olib chiqildi!)
+bot.hears('Limitlar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  userSessions[ctx.from.id] = { step: 'LIMIT_BRANCH' };
+  ctx.reply('Qaysi filial uchun limit?', Markup.keyboard([...branches, 'Bekor qilish'], { columns: 2 }).resize());
+});
+
+bot.hears('Kategoriyalar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  const cats = await getActiveCategories();
+  ctx.reply(`Joriy kategoriyalar (${cats.length} ta):\n\n${cats.map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
+    Markup.keyboard([['Yangi kategoriya', "Kategoriyani ochirish"], ['Bekor qilish']]).resize());
+});
+
+bot.hears('Foydalanuvchilar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  ctx.reply('Foydalanuvchi boshqaruvi:', Markup.keyboard([['Foydalanuvchi qoshish', 'Foydalanuvchilar royxati'], ['Bekor qilish']]).resize());
 });
 
 // ==========================================
@@ -948,27 +957,6 @@ bot.action(/^selcat_(.+)$/, async (ctx) => {
   }
   await ctx.editMessageText('Kategoriyalarni tanlang:\nTanlangan: '+(session.selectedCategories.length?session.selectedCategories.length+' ta':'hech biri'), await buildCategoryButtons(session.selectedCategories)).catch(()=>{});
   ctx.answerCbQuery();
-});
-
-// ==========================================
-// ADMIN YANGI BUYRUQLAR
-// ==========================================
-bot.hears('Limitlar', async (ctx) => {
-  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
-  userSessions[ctx.from.id] = { step: 'LIMIT_BRANCH' };
-  ctx.reply('Qaysi filial uchun limit?', Markup.keyboard([...branches, 'Bekor qilish'], { columns: 2 }).resize());
-});
-
-bot.hears('Kategoriyalar', async (ctx) => {
-  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
-  const cats = await getActiveCategories();
-  ctx.reply(`Joriy kategoriyalar (${cats.length} ta):\n\n${cats.map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
-    Markup.keyboard([['Yangi kategoriya', "Kategoriyani ochirish"], ['Bekor qilish']]).resize());
-});
-
-bot.hears('Foydalanuvchilar', async (ctx) => {
-  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
-  ctx.reply('Foydalanuvchi boshqaruvi:', Markup.keyboard([['Foydalanuvchi qoshish', 'Foydalanuvchilar royxati'], ['Bekor qilish']]).resize());
 });
 
 bot.action(/^report_(.+)$/, async (ctx) => {
