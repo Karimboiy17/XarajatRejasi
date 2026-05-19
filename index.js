@@ -219,6 +219,8 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
   try {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+    
+    // Ham SCHEDULED, ham PENDING holatdagilarni olamiz
     const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED' || r.get('Status') === 'PENDING');
     if (waiting.length === 0) return ctx.reply("Kutilayotgan yoki tasdiqlanmagan so'rovlar yo'q.");
 
@@ -234,25 +236,25 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
       const isCard = r.get('Payment Type') === 'Karta';
       const payDet = r.get('Payment Detail');
       const schedDate = r.get('Scheduled Date') ? ` | ${r.get('Scheduled Date')}` : '';
-      const statusLabel = isPending ? 'KUTILMOQDA' : `TASDIQLANGAN${schedDate}`;
+      const statusLabel = isPending ? '🟡 KUTILMOQDA' : `🗓 TASDIQLANGAN${schedDate}`;
 
       const msg =
-        `[${statusLabel}]\n` +
-        `${r.get('Branch')} | ${r.get('Staff Name')}\n` +
-        `${amt.toLocaleString('en-US')} UZS | ${r.get('Payment Type')} (${payDet})\n` +
-        `${r.get('Description')}\n` +
-        `ID: ${r.rowNumber}`;
+        `${statusLabel}\n` +
+        `📍 ${r.get('Branch')} | 👤 ${r.get('Staff Name')}\n` +
+        `💰 ${amt.toLocaleString('en-US')} UZS | 💳 ${r.get('Payment Type')} (${payDet})\n` +
+        `📝 ${r.get('Description')}\n` +
+        `🆔 ID: ${r.rowNumber}`;
 
       let btns = [];
       if (isPending) {
         btns = [
-          [Markup.button.callback('Tasdiqlash', `decide_${r.rowNumber}`)],
-          [Markup.button.callback('Rad etish', `rej_${r.rowNumber}`)]
+          [Markup.button.callback('✅ Tasdiqlash', `decide_${r.rowNumber}`)],
+          [Markup.button.callback('❌ Rad etish', `rej_${r.rowNumber}`)]
         ];
       } else {
         btns = [
-          [Markup.button.callback('Tolash (Chek reply qiling)', `paynow_${r.rowNumber}`)],
-          [Markup.button.callback('Rad etish', `rej_${r.rowNumber}`)]
+          [Markup.button.callback('💳 Tolash (Chek reply qiling)', `paynow_${r.rowNumber}`)],
+          [Markup.button.callback('❌ Rad etish', `rej_${r.rowNumber}`)]
         ];
       }
       await ctx.reply(msg, Markup.inlineKeyboard(btns));
