@@ -12,6 +12,7 @@ const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_IDS = process.env.MANAGER_CHAT_IDS ? process.env.MANAGER_CHAT_IDS.split(',').map(id => id.trim()) : [];
 const ALLOWED_STAFF_IDS = process.env.ALLOWED_STAFF_IDS ? process.env.ALLOWED_STAFF_IDS.split(',').map(id => id.trim()) : [];
 const CEO_ID = process.env.CEO_CHAT_ID || "NO_CEO"; 
+const HEAD_CEO_ID = process.env.HEAD_CEO || "NO_HEAD_CEO"; // YANGI HEAD CEO ID
 const MAINTENANCE_GROUP_ID = process.env.MAINTENANCE_GROUP_ID || null;
 
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
@@ -30,7 +31,8 @@ const userSessions = {};
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const uid = ctx.from.id.toString();
-  const isAllowed = ALLOWED_STAFF_IDS.includes(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID;
+  // HEAD_CEO_ID ham tizimdan foydalanish huquqiga ega
+  const isAllowed = ALLOWED_STAFF_IDS.includes(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID;
   if (!isAllowed) {
     if (ctx.chat && ctx.chat.type === 'private') {
       try { await ctx.reply("Kechirasiz, sizda ushbu botdan foydalanish huquqi yo'q.\nIltimos, ruxsat olish uchun rahbariyatga murojaat qiling."); } catch (e) {}
@@ -161,7 +163,12 @@ async function generateGlobalReport() {
 // ==========================================
 bot.command('admin', (ctx) => {
   const uid = ctx.from.id.toString();
-  if (MANAGER_IDS.includes(uid)) {
+  if (uid === HEAD_CEO_ID) {
+    return ctx.reply('👔 Bosh Direktor (HEAD CEO) Paneli:\nQuyidagi boshqaruv tugmalaridan birini tanlang:', Markup.keyboard([
+      ['📈 Moliya Hisoboti', '🕵️ Procurement Nazorati'],
+      ['💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati']
+    ]).resize());
+  } else if (MANAGER_IDS.includes(uid)) {
     return ctx.reply('Procurement Manager Paneli:', Markup.keyboard([
       ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
       ['Cashflow'],
@@ -175,9 +182,9 @@ bot.command('admin', (ctx) => {
   }
 });
 
-bot.hears(['Cashflow', 'Cashflow Forecast'], async (ctx) => {
+bot.hears(['Cashflow', 'Cashflow Forecast', '💸 Pul Oqimi (Cashflow)'], async (ctx) => {
   const uid = ctx.from.id.toString();
-  if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID) return;
+  if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID && uid !== HEAD_CEO_ID) return;
   try {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
@@ -197,9 +204,9 @@ bot.hears(['Cashflow', 'Cashflow Forecast'], async (ctx) => {
   } catch (e) { ctx.reply('Xatolik.'); }
 });
 
-bot.hears(['Hisobot (Report)', 'Umumiy Hisobot'], async (ctx) => {
+bot.hears(['Hisobot (Report)', 'Umumiy Hisobot', '📈 Moliya Hisoboti'], async (ctx) => {
   const uid = ctx.from.id.toString();
-  if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID) return;
+  if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID && uid !== HEAD_CEO_ID) return;
   try {
     const months = await getAvailableMonths();
     const now = new Date();
@@ -255,7 +262,80 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
   }
 });
 
-// Admin yangi tugmalari (Yuqoriga olib chiqildi!)
+// ==========================================
+// YENGI HEAD CEO FUNKSIYALARI
+// ==========================================
+bot.hears('🕵️ Procurement Nazorati', async (ctx) => {
+  if (ctx.from.id.toString() !== HEAD_CEO_ID) return;
+  try {
+      await doc.loadInfo();
+      const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+      const todayStr = getTodayStr();
+      
+      let pending = 0; 
+      let overdue = 0; 
+      let upcoming = 0; 
+      
+      rows.forEach(r => {
+          const status = r.get('Status');
+          if (status === 'PENDING') pending++;
+          if (status === 'SCHEDULED') {
+              const sDate = r.get('Scheduled Date');
+              if (sDate && sDate <= todayStr) overdue++;
+              else upcoming++;
+          }
+      });
+      
+      let msg = `🕵️ *PROCUREMENT (Xaridlar) BO'LIMI NAZORATI*\n━━━━━━━━━━━━━━━\n\n`;
+      if (overdue > 0) {
+          msg += `🔴 *DIQQAT: Kechikayotgan to'lovlar bor!*\nSoni: ${overdue} ta so'rov qolib ketgan (to'lov muddati bugun yoki o'tib ketgan, lekin menejer to'lamagan).\n\n`;
+      } else {
+          msg += `✅ *Kechikishlar yo'q.* Menejer hamma to'lovlarni o'z vaqtida qilmoqda.\n\n`;
+      }
+      
+      msg += `🟡 *Ko'rib chiqilmagan (Yangi):* ${pending} ta so'rov kutilmoqda\n`;
+      msg += `🔵 *Kelgusida to'lanadigan:* ${upcoming} ta so'rov rejalashtirilgan\n`;
+      
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch(e) {
+      ctx.reply('Xatolik yuz berdi.');
+  }
+});
+
+bot.hears('📊 Budjet Holati', async (ctx) => {
+  if (ctx.from.id.toString() !== HEAD_CEO_ID) return;
+  try {
+      await doc.loadInfo();
+      const budgetSheet = doc.sheetsByTitle['Budgets'];
+      const expenseSheet = doc.sheetsByTitle['Pending_Expenses'];
+      if(!budgetSheet || !expenseSheet) return ctx.reply("Jadvallar topilmadi.");
+      
+      const budgetRows = await budgetSheet.getRows();
+      
+      let msg = `📊 *FILIALLAR BUDJETI HOLATI (Shu oy)*\n━━━━━━━━━━━━━━━\n`;
+      let dataFound = false;
+
+      for (const branch of branches) {
+          const bLimitRow = budgetRows.find(r => r.get('Branch') === branch && (!r.get('Category') || r.get('Category').trim() === ''));
+          if (bLimitRow) {
+              dataFound = true;
+              const limit = parseSafeInt(bLimitRow.get('Monthly Limit'));
+              const spent = await getMonthlySpent(expenseSheet, branch);
+              const percent = limit > 0 ? Math.round((spent / limit) * 100) : 0;
+              
+              let icon = percent >= 100 ? '🔴' : (percent >= 80 ? '🟡' : '🟢');
+              msg += `${icon} *${branch.replace('📍 ', '')}*: ${spent.toLocaleString()} / ${limit.toLocaleString()} UZS (${percent}%)\n`;
+          }
+      }
+      
+      if(!dataFound) msg += "⚠️ Hozircha umumiy filial limitlari o'rnatilmagan.";
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch(e) {
+      ctx.reply('Xatolik yuz berdi.');
+  }
+});
+
+
 bot.hears('Limitlar', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
   userSessions[ctx.from.id] = { step: 'LIMIT_BRANCH' };
@@ -328,14 +408,25 @@ bot.command(['start', 'new'], async (ctx) => {
   const userId = ctx.from.id;
   const uid = userId.toString();
   delete userSessions[userId];
-  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) {
+  
+  if (uid === HEAD_CEO_ID) {
+    return ctx.reply('👔 Bosh Direktor (HEAD CEO) Paneli:\nQuyidagi boshqaruv tugmalaridan birini tanlang:', Markup.keyboard([
+      ['📈 Moliya Hisoboti', '🕵️ Procurement Nazorati'],
+      ['💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati']
+    ]).resize());
+  } else if (MANAGER_IDS.includes(uid)) {
     return ctx.reply('IELTS Zone Finance Bot\nAdmin paneli:', Markup.keyboard([
       ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
       ['Cashflow'],
       ['Limitlar', 'Kategoriyalar'],
       ['Foydalanuvchilar']
     ]).resize());
+  } else if (uid === CEO_ID) {
+    return ctx.reply('IELTS Zone Finance Bot\nCEO paneli:', Markup.keyboard([
+      ['Umumiy Hisobot', 'Cashflow Forecast']
+    ]).resize());
   }
+  
   const userBranches = await getUserBranches(userId);
   userSessions[userId] = { step: 'BRANCH' };
   ctx.reply('IELTS Zone Finance Bot\nFilialni tanlang:', Markup.keyboard([...userBranches, 'Bekor qilish'], { columns: 2 }).oneTime().resize());
@@ -347,18 +438,27 @@ bot.on('message', async (ctx) => {
   const voice = ctx.message.voice;
 
   const uid2 = ctx.from.id.toString();
-  const isAdminUser = MANAGER_IDS.includes(uid2) || uid2 === CEO_ID;
-  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar'];
+  const isAdminUser = MANAGER_IDS.includes(uid2) || uid2 === CEO_ID || uid2 === HEAD_CEO_ID;
+  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar', '📈 Moliya Hisoboti', '🕵️ Procurement Nazorati', '💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati'];
   if (adminTexts.includes(text)) return;
 
   if (text === 'Bekor qilish' || text === '/start') {
     delete userSessions[userId];
-    if (isAdminUser) {
+    if (uid2 === HEAD_CEO_ID) {
+      return ctx.reply('Bekor qilindi.', Markup.keyboard([
+        ['📈 Moliya Hisoboti', '🕵️ Procurement Nazorati'],
+        ['💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati']
+      ]).resize());
+    } else if (MANAGER_IDS.includes(uid2)) {
       return ctx.reply('Bekor qilindi.', Markup.keyboard([
         ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
         ['Cashflow'],
         ['Limitlar', 'Kategoriyalar'],
         ['Foydalanuvchilar']
+      ]).resize());
+    } else if (uid2 === CEO_ID) {
+      return ctx.reply('Bekor qilindi.', Markup.keyboard([
+        ['Umumiy Hisobot', 'Cashflow Forecast']
       ]).resize());
     }
     const userBranches = await getUserBranches(userId);
@@ -402,12 +502,12 @@ bot.on('message', async (ctx) => {
     return ctx.reply(ok ? `"${text}" ochirildi!` : 'Topilmadi.');
   }
   if (text === 'Yangi kategoriya') {
-    if (!isAdminUser) return;
+    if (!isAdminUser || uid2 === HEAD_CEO_ID) return;
     userSessions[userId] = { step: 'ADD_CATEGORY' };
     return ctx.reply('Yangi kategoriya nomini kiriting:', Markup.keyboard(['Bekor qilish']).resize());
   }
   if (text === "Kategoriyani ochirish") {
-    if (!isAdminUser) return;
+    if (!isAdminUser || uid2 === HEAD_CEO_ID) return;
     const cats = await getActiveCategories();
     userSessions[userId] = { step: 'DELETE_CATEGORY' };
     return ctx.reply("Ochirmoqchi bolgan kategoriyani tanlang:", Markup.keyboard([...cats, 'Bekor qilish'], { columns: 2 }).resize());
@@ -415,12 +515,12 @@ bot.on('message', async (ctx) => {
 
   // FOYDALANUVCHI sessiyasi
   if (text === 'Foydalanuvchi qoshish') {
-    if (!isAdminUser) return;
+    if (!isAdminUser || uid2 === HEAD_CEO_ID) return;
     userSessions[userId] = { step: 'USER_ADD_ID' };
     return ctx.reply('Xodimning Telegram ID sini kiriting:', Markup.keyboard(['Bekor qilish']).resize());
   }
   if (text === 'Foydalanuvchilar royxati') {
-    if (!isAdminUser) return;
+    if (!isAdminUser || uid2 === HEAD_CEO_ID) return;
     try {
       await doc.loadInfo();
       const sheet = doc.sheetsByTitle['Users'];
@@ -449,6 +549,7 @@ bot.on('message', async (ctx) => {
 
   // XARAJAT WIZARD
   if (!session) {
+    if (uid2 === HEAD_CEO_ID) return; // Head CEO kiritolmaydi
     const userBranches = await getUserBranches(userId);
     if (userBranches.includes(text)) userSessions[userId] = { step: 'BRANCH', branch: text };
     return;
@@ -578,6 +679,7 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
 
       const managerMsg = `Yangi Sorov\nFilial: ${session.branch}\nKimdan: ${ctx.from.first_name}\nSumma: ${session.amount.toLocaleString('en-US')} UZS\nTolov: ${session.payType} (${session.payDetail})\nSabab: ${session.description}\nMuhimligi: ${session.priority}${budgetAudit}`;
 
+      // HEAD CEO ga xabar bormaydi, faqat managerlarga boradi
       for (let managerId of MANAGER_IDS) {
         await bot.telegram.sendMessage(managerId, managerMsg, Markup.inlineKeyboard(buttons)).catch(() => {});
         if (session.voiceFileId) {
@@ -623,6 +725,8 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
     row.set('Status', 'PAID');
     await row.save();
     await ctx.editMessageCaption('PUL QABUL QILINDI VA YOPILDI.');
+    
+    // Yana MANAGER larga yuboramiz (HEAD_CEO_ID kiritilmaydi)
     for (let managerId of MANAGER_IDS) {
       await bot.telegram.sendMessage(managerId, `Xodim ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS miqdoridagi pulni olganini tasdiqladi. (ID: ${rowNum})`).catch(() => {});
     }
@@ -729,7 +833,7 @@ async function getUserData(telegramId) {
 
 async function getUserBranches(telegramId) {
   const uid = telegramId.toString();
-  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) return branches;
+  if (MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID) return branches;
   const user = await getUserData(uid);
   if (!user) return branches;
   const br = user.get('Branches') || '';
@@ -742,7 +846,7 @@ async function getUserBranches(telegramId) {
 
 async function getUserCategories(telegramId) {
   const uid = telegramId.toString();
-  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) return await getActiveCategories();
+  if (MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID) return await getActiveCategories();
   const user = await getUserData(uid);
   if (!user) return categories;
   const cats = user.get('Categories') || '';
@@ -960,7 +1064,7 @@ bot.action(/^selcat_(.+)$/, async (ctx) => {
 });
 
 bot.action(/^report_(.+)$/, async (ctx) => {
-  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return ctx.answerCbQuery();
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID && ctx.from.id.toString() !== HEAD_CEO_ID) return ctx.answerCbQuery();
   try {
     await ctx.editMessageText('Hisobot tayyorlanmoqda...');
     const msg = await generateReportByMonth(ctx.match[1]);
