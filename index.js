@@ -1312,47 +1312,39 @@ bot.on('photo', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString())) return;
 
   const reply = ctx.message.reply_to_message;
-  if (!reply || !reply.text || !reply.text.includes('ID:')) return;
+  if (reply && reply.text && reply.text.includes('ID:')) {
+    const rowNum = reply.text.split('ID:')[1].trim();
 
-  const rowNum = reply.text.split('ID:')[1].trim().split('\n')[0].trim();
+    try {
+      await doc.loadInfo();
+      const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+      const row = rows.find(r => r.rowNumber == rowNum);
 
-  try {
-    await doc.loadInfo();
-    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
-    const row = rows.find(r => r.rowNumber == rowNum);
-    if (!row) return ctx.reply('ID topilmadi.');
+      if (!row) return ctx.reply('ID topilmadi.');
 
-    const staffChatId = row.get('_StaffChatId');
-    const amount = parseSafeInt(row.get('Amount')).toLocaleString('en-US');
-    const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+      row.set('Status', 'CHEQUE_SENT');
+      await row.save();
+      ctx.reply('Chek xodimga tasdiqlash uchun yuborildi!');
 
-    row.set('Status', 'CHEQUE_SENT');
-    await row.save();
+      // Xodimga yuborish — eski ishlaydigan usul
+      await bot.telegram.sendPhoto(row.get('_StaffChatId'), ctx.message.photo[0].file_id, {
+        caption: `TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\n\nSumma: ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS\n\nIltimos, pulni olganingizni tasdiqlang:`,
+        ...Markup.inlineKeyboard([[Markup.button.callback('Qabul qildim', `staffconfirm_${rowNum}`)]])
+      }).catch(e => console.error('Staff photo error:', e.message));
 
-    ctx.reply('Chek xodimga tasdiqlash uchun yuborildi!');
-
-    // Xodimga yuborish
-    await bot.telegram.sendPhoto(staffChatId, fileId, {
-      caption: 'TOLOV QILINDI!\nProcurement Manager pulni otkazdi.\nSumma: ' + amount + ' UZS\n\nIltimos, pulni olganingizni tasdiqlang:',
-      reply_markup: {
-        inline_keyboard: [[
-          { text: 'Qabul qildim', callback_data: 'staffconfirm_' + rowNum }
-        ]]
+      // Guruhga yuborish
+      const groupMsgId = row.get('GroupMsgId');
+      if (MAINTENANCE_GROUP_ID && groupMsgId) {
+        await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, ctx.message.photo[0].file_id, {
+          reply_to_message_id: parseInt(groupMsgId),
+          caption: `Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...`
+        }).catch(e => console.error('Group photo error:', e.message));
       }
-    }).catch(e => console.error('Staff photo error:', e.message));
 
-    // Guruhga yuborish
-    const groupMsgId = row.get('GroupMsgId');
-    if (MAINTENANCE_GROUP_ID && groupMsgId) {
-      await bot.telegram.sendPhoto(MAINTENANCE_GROUP_ID, fileId, {
-        reply_to_message_id: parseInt(groupMsgId),
-        caption: 'Procurement menejer chekni yubordi. Xodim tasdigi kutilmoqda...'
-      }).catch(e => console.error('Group photo error:', e.message));
+    } catch (e) {
+      console.error('Photo handler error:', e);
+      ctx.reply('Xatolik yuz berdi.');
     }
-
-  } catch (e) {
-    console.error('Photo handler error:', e);
-    ctx.reply('Xatolik: ' + e.message);
   }
 });
 
@@ -1433,12 +1425,11 @@ bot.action(/^(decide|paynow|schedD|schedF|schedM|rej)_(\d+)(?:_(\d+))?$/, async 
       await updateGroupStatus(row, true);
       await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
 
-      // Avval inline xabarni yangilash
-      await ctx.editMessageText('Hozir tolash tanlandi.\nTolov: ' + payType + ' (' + payDetail + ')\nSumma: ' + amount + ' UZS');
-
-      // Keyin ALOHIDA yangi xabar yuborish — shu xabarga reply qilinadi
-      await bot.telegram.sendMessage(ctx.from.id, 'Ushbu xabarga CHEK RASMINI REPLY qilib yuboring.\nID: ' + rowNum);
-      return;
+      await bot.telegram.sendMessage(staffId, "Tolov tasdiqlandi! Pul otkazilmoqda.").catch(() => {});
+      return ctx.editMessageText(
+        'Hozir tolash tanlandi.\n\nTolov: ' + payType + ' (' + formattedDetail + ')\nSumma: ' + formattedAmount + ' UZS\n\nUshbu xabarga CHEK RASMINI REPLY qiling.\nID: ' + rowNum,
+        { parse_mode: 'Markdown' }
+      );
     }
 
     if (action.startsWith('sched')) {
