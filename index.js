@@ -287,6 +287,30 @@ bot.hears('🕵️ Procurement Nazorati', async (ctx) => {
       });
       
       let msg = `🕵️ *PROCUREMENT (Xaridlar) BO'LIMI NAZORATI*\n━━━━━━━━━━━━━━━\n\n`;
+      
+      // 1. To'lovdagi kechikishlar
+      if (overdue > 0) {
+          msg += `🔴 *TO'LOVDAGI KECHIKISHLAR:* ${overdue} ta!\n_(Menejer to'lov kunini belgilagan, lekin vaqti kelsa ham pulni o'tkazmagan)._\n\n`;
+      } else {
+          msg += `✅ To'lovlarda kechikish yo'q.\n\n`;
+      }
+      
+      // 2. Ko'rib chiqilmagan so'rovlar (Siz aytgan mantiq)
+      if (pending > 0) {
+          msg += `🟠 *TASDIQLANMAGAN SO'ROVLAR:* ${pending} ta!\n_(Xodimlar pul so'ragan, lekin menejer hali botga kirib ko'rib chiqmagan. Bu ish jarayoni cho'zilayotganini bildiradi)._\n\n`;
+      } else {
+          msg += `✅ Ko'rib chiqilmagan (osilib qolgan) so'rovlar yo'q.\n\n`;
+      }
+      
+      msg += `━━━━━━━━━━━━━━━\n🔵 *Kelgusida to'lanadigan:* ${upcoming} ta so'rov rejalashtirilgan.`;
+      
+      ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch(e) {
+      ctx.reply('Xatolik yuz berdi.');
+  }
+});
+      
+      let msg = `🕵️ *PROCUREMENT (Xaridlar) BO'LIMI NAZORATI*\n━━━━━━━━━━━━━━━\n\n`;
       if (overdue > 0) {
           msg += `🔴 *DIQQAT: Kechikayotgan to'lovlar bor!*\nSoni: ${overdue} ta so'rov qolib ketgan (to'lov muddati bugun yoki o'tib ketgan, lekin menejer to'lamagan).\n\n`;
       } else {
