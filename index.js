@@ -199,8 +199,15 @@ bot.hears(['Hisobot (Report)', 'Umumiy Hisobot'], async (ctx) => {
   const uid = ctx.from.id.toString();
   if (!MANAGER_IDS.includes(uid) && uid !== CEO_ID) return;
   try {
-    const msg = await generateGlobalReport();
-    ctx.reply(msg);
+    const months = await getAvailableMonths();
+    const now = new Date();
+    const currentMonth = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+    const rows = [];
+    for (let i = 0; i < Math.min(months.length, 6); i += 2) {
+      rows.push(months.slice(i,i+2).map(m => Markup.button.callback(m===currentMonth?'Joriy oy ('+getMonthName(m)+')':getMonthName(m), 'report_'+m)));
+    }
+    rows.push([Markup.button.callback('Hammasi (barcha vaqt)', 'report_all')]);
+    ctx.reply('Qaysi davr uchun hisobot?', Markup.inlineKeyboard(rows));
   } catch (e) { ctx.reply('Xatolik.'); }
 });
 
@@ -306,11 +313,21 @@ bot.on('photo', async (ctx) => {
 // ==========================================
 // 8. WIZARD
 // ==========================================
-bot.command(['start', 'new'], (ctx) => {
+bot.command(['start', 'new'], async (ctx) => {
   const userId = ctx.from.id;
+  const uid = userId.toString();
   delete userSessions[userId];
+  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) {
+    return ctx.reply('IELTS Zone Finance Bot\nAdmin paneli:', Markup.keyboard([
+      ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
+      ['Cashflow'],
+      ['Limitlar', 'Kategoriyalar'],
+      ['Foydalanuvchilar']
+    ]).resize());
+  }
+  const userBranches = await getUserBranches(userId);
   userSessions[userId] = { step: 'BRANCH' };
-  ctx.reply('IELTS Zone Finance Bot\nFilialni tanlang:', Markup.keyboard(branches, { columns: 2 }).oneTime().resize());
+  ctx.reply('IELTS Zone Finance Bot\nFilialni tanlang:', Markup.keyboard([...userBranches, 'Bekor qilish'], { columns: 2 }).oneTime().resize());
 });
 
 bot.on('message', async (ctx) => {
@@ -318,33 +335,125 @@ bot.on('message', async (ctx) => {
   const text = ctx.message.text || '';
   const voice = ctx.message.voice;
 
-  if (text.includes('Hisobot') || text.includes('Kutilayotgan') || text.includes('Cashflow') || text.includes('Umumiy')) return;
+  const uid2 = ctx.from.id.toString();
+  const isAdminUser = MANAGER_IDS.includes(uid2) || uid2 === CEO_ID;
+  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar'];
+  if (adminTexts.includes(text)) return;
 
   if (text === 'Bekor qilish' || text === '/start') {
     delete userSessions[userId];
-    return ctx.reply('Bekor qilindi. Boshlash uchun filialni tanlang:', Markup.keyboard(branches, { columns: 2 }).resize());
+    if (isAdminUser) {
+      return ctx.reply('Bekor qilindi.', Markup.keyboard([
+        ['Hisobot (Report)', 'Kutilayotgan (Waiting)'],
+        ['Cashflow'],
+        ['Limitlar', 'Kategoriyalar'],
+        ['Foydalanuvchilar']
+      ]).resize());
+    }
+    const userBranches = await getUserBranches(userId);
+    return ctx.reply('Bekor qilindi.', Markup.keyboard([...userBranches, 'Bekor qilish'], { columns: 2 }).resize());
   }
 
-  if (!userSessions[userId] && branches.includes(text)) {
-    userSessions[userId] = { step: 'BRANCH' };
-  }
-
+  // Admin sessiya handlerlari
   const session = userSessions[userId];
-  if (!session) return;
+
+  // LIMIT sessiyasi
+  if (session && session.step === 'LIMIT_BRANCH') {
+    const branch = text.replace('📍 ', '');
+    if (['Integro','Drujba','Amir Temur','Central','Marketing'].includes(branch)) {
+      session.limitBranch = text; session.step = 'LIMIT_CATEGORY';
+      const cats = await getActiveCategories();
+      return ctx.reply(text + ' uchun qaysi limit?\n"Umumiy filial" = umumiy chegara',
+        Markup.keyboard([...cats, 'Umumiy filial', 'Bekor qilish'], { columns: 2 }).resize());
+    }
+  }
+  if (session && session.step === 'LIMIT_CATEGORY') {
+    session.limitCategory = text === 'Umumiy filial' ? null : text;
+    session.step = 'LIMIT_AMOUNT';
+    return ctx.reply(session.limitBranch + ' - ' + (session.limitCategory || 'Umumiy') + ' uchun oylik limit (raqam):');
+  }
+  if (session && session.step === 'LIMIT_AMOUNT') {
+    const amount = parseSafeInt(text);
+    if (!amount) return ctx.reply('Yaroqli raqam kiriting:');
+    const ok = await setBudgetLimit(session.limitBranch, session.limitCategory, amount);
+    delete userSessions[userId];
+    return ctx.reply(ok ? `Saqlandi!\n${session.limitBranch} - ${session.limitCategory||'Umumiy'}: ${amount.toLocaleString()} UZS` : 'Xatolik.',
+      Markup.keyboard([['Hisobot (Report)','Kutilayotgan (Waiting)'],['Cashflow'],['Limitlar','Kategoriyalar'],['Foydalanuvchilar']]).resize());
+  }
+
+  // KATEGORIYA sessiyasi
+  if (session && session.step === 'ADD_CATEGORY') {
+    const ok = await addCategory(text); delete userSessions[userId];
+    return ctx.reply(ok ? `"${text}" qoshildi!` : 'Bu kategoriya allaqachon mavjud.');
+  }
+  if (session && session.step === 'DELETE_CATEGORY') {
+    const ok = await deleteCategory(text); delete userSessions[userId];
+    return ctx.reply(ok ? `"${text}" ochirildi!` : 'Topilmadi.');
+  }
+  if (text === 'Yangi kategoriya') {
+    if (!isAdminUser) return;
+    userSessions[userId] = { step: 'ADD_CATEGORY' };
+    return ctx.reply('Yangi kategoriya nomini kiriting:', Markup.keyboard(['Bekor qilish']).resize());
+  }
+  if (text === "Kategoriyani ochirish") {
+    if (!isAdminUser) return;
+    const cats = await getActiveCategories();
+    userSessions[userId] = { step: 'DELETE_CATEGORY' };
+    return ctx.reply("Ochirmoqchi bolgan kategoriyani tanlang:", Markup.keyboard([...cats, 'Bekor qilish'], { columns: 2 }).resize());
+  }
+
+  // FOYDALANUVCHI sessiyasi
+  if (text === 'Foydalanuvchi qoshish') {
+    if (!isAdminUser) return;
+    userSessions[userId] = { step: 'USER_ADD_ID' };
+    return ctx.reply('Xodimning Telegram ID sini kiriting:', Markup.keyboard(['Bekor qilish']).resize());
+  }
+  if (text === 'Foydalanuvchilar royxati') {
+    if (!isAdminUser) return;
+    try {
+      await doc.loadInfo();
+      const sheet = doc.sheetsByTitle['Users'];
+      const rows = await sheet.getRows();
+      if (!rows.length) return ctx.reply("Hali foydalanuvchi qoshilmagan.");
+      for (const r of rows) {
+        const tid = r.get('Telegram ID');
+        const cats = r.get('Categories') || '';
+        const msg = r.get('Name') + '\nID: ' + tid + '\nRol: ' + r.get('Role') + '\nFiliallar: ' + r.get('Branches') + '\nKategoriyalar: ' + (cats.length>60?cats.substring(0,60)+'...':cats);
+        await ctx.reply(msg, Markup.inlineKeyboard([
+          [Markup.button.callback('Filiallarni ozgartirish', 'edit_branch_'+tid)],
+          [Markup.button.callback('Kategoriyalarni ozgartirish', 'edit_cat_'+tid)],
+          [Markup.button.callback("Xodimni ochirish", 'del_user_'+tid)]
+        ]));
+      }
+    } catch(e) { ctx.reply('Xatolik.'); }
+    return;
+  }
+  if (session && session.step === 'USER_ADD_ID') { session.newUserId = text; session.step = 'USER_ADD_NAME'; return ctx.reply('Xodim ismini kiriting:'); }
+  if (session && session.step === 'USER_ADD_NAME') { session.newUserName = text; session.step = 'USER_ADD_ROLE'; return ctx.reply('Rolini tanlang:', Markup.keyboard(['Staff','Manager','Bekor qilish']).resize()); }
+  if (session && session.step === 'USER_ADD_ROLE') {
+    if (!['Staff','Manager'].includes(text)) return ctx.reply('Staff yoki Manager tanlang:');
+    session.newUserRole = text; session.step = 'USER_ADD_BRANCHES'; session.selectedBranches = [];
+    return ctx.reply('Filiallarni tanlang:', buildBranchButtons([]));
+  }
+
+  // XARAJAT WIZARD
+  if (!session) {
+    const userBranches = await getUserBranches(userId);
+    if (userBranches.includes(text)) userSessions[userId] = { step: 'BRANCH', branch: text };
+    return;
+  }
 
   if (session.step === 'BRANCH') {
-    if (branches.includes(text)) {
-      session.branch = text;
-      session.step = 'CATEGORY';
-      return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...categories, 'Bekor qilish'], { columns: 2 }).resize());
+    const userBranches = await getUserBranches(userId);
+    if (userBranches.includes(text)) {
+      session.branch = text; session.step = 'CATEGORY';
+      const userCats = await getUserCategories(userId);
+      return ctx.reply('Kategoriyani tanlang:', Markup.keyboard([...userCats, 'Bekor qilish'], { columns: 2 }).resize());
     }
   }
   if (session.step === 'CATEGORY') {
-    if (categories.includes(text)) {
-      session.category = text;
-      session.step = 'AMOUNT';
-      return ctx.reply('Summani kiriting (Faqat raqam):', Markup.keyboard(['Bekor qilish']).resize());
-    }
+    session.category = text; session.step = 'AMOUNT';
+    return ctx.reply('Summani kiriting (Faqat raqam):', Markup.keyboard(['Bekor qilish']).resize());
   }
   if (session.step === 'AMOUNT') {
     session.amount = parseSafeInt(text);
@@ -592,6 +701,322 @@ async function updateGroupMessageStatus(row, isApproved) {
     await bot.telegram.editMessageText(MAINTENANCE_GROUP_ID, parseInt(groupMsgId), null, newMsg).catch(() => {});
   }
 }
+
+
+// ==========================================
+// USERS JADVALI
+// ==========================================
+async function getUserData(telegramId) {
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Users'];
+    if (!sheet) return null;
+    const rows = await sheet.getRows();
+    return rows.find(r => r.get('Telegram ID') === telegramId.toString()) || null;
+  } catch (e) { return null; }
+}
+
+async function getUserBranches(telegramId) {
+  const uid = telegramId.toString();
+  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) return branches;
+  const user = await getUserData(uid);
+  if (!user) return branches;
+  const br = user.get('Branches') || '';
+  if (!br.trim() || br.toLowerCase() === 'hammasi') return branches;
+  return br.split(',').map(b => {
+    const clean = b.trim();
+    return branches.find(be => be.includes(clean)) || ('📍 ' + clean);
+  }).filter(Boolean);
+}
+
+async function getUserCategories(telegramId) {
+  const uid = telegramId.toString();
+  if (MANAGER_IDS.includes(uid) || uid === CEO_ID) return await getActiveCategories();
+  const user = await getUserData(uid);
+  if (!user) return categories;
+  const cats = user.get('Categories') || '';
+  if (!cats.trim() || cats.toLowerCase() === 'hammasi') return await getActiveCategories();
+  return cats.split(',').map(c => c.trim()).filter(Boolean);
+}
+
+async function saveUserData(telegramId, name, role, branchStr, catStr) {
+  await doc.loadInfo();
+  const sheet = doc.sheetsByTitle['Users'];
+  if (!sheet) return false;
+  const rows = await sheet.getRows();
+  const existing = rows.find(r => r.get('Telegram ID') === telegramId.toString());
+  if (existing) {
+    existing.set('Name', name); existing.set('Role', role);
+    existing.set('Branches', branchStr); existing.set('Categories', catStr);
+    await existing.save();
+  } else {
+    await sheet.addRow({ 'Telegram ID': telegramId.toString(), 'Name': name, 'Role': role, 'Branches': branchStr, 'Categories': catStr });
+  }
+  return true;
+}
+
+// ==========================================
+// KATEGORIYALAR
+// ==========================================
+async function getActiveCategories() {
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Categories'];
+    if (!sheet) return categories;
+    const rows = await sheet.getRows();
+    const active = rows.filter(r => r.get('Active') !== 'FALSE' && r.get('Name')).map(r => r.get('Name'));
+    return active.length > 0 ? active : categories;
+  } catch (e) { return categories; }
+}
+
+async function addCategory(name) {
+  try {
+    await doc.loadInfo();
+    let catSheet = doc.sheetsByTitle['Categories'];
+    if (!catSheet) catSheet = await doc.addSheet({ title: 'Categories', headerValues: ['Name', 'Active', 'Created'] });
+    const catRows = await catSheet.getRows();
+    if (catRows.find(r => r.get('Name') === name)) return false;
+    await catSheet.addRow({ 'Name': name, 'Active': 'TRUE', 'Created': new Date().toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' }) });
+    const budgetSheet = doc.sheetsByTitle['Budgets'];
+    if (budgetSheet) {
+      const budgetRows = await budgetSheet.getRows();
+      for (const branch of branches) {
+        if (!budgetRows.find(r => r.get('Branch') === branch && r.get('Category') === name))
+          await budgetSheet.addRow({ 'Branch': branch, 'Category': name, 'Monthly Limit': '0' });
+      }
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+async function deleteCategory(name) {
+  try {
+    await doc.loadInfo();
+    const catSheet = doc.sheetsByTitle['Categories'];
+    if (!catSheet) return false;
+    const catRows = await catSheet.getRows();
+    const catRow = catRows.find(r => r.get('Name') === name);
+    if (!catRow) return false;
+    catRow.set('Active', 'FALSE'); await catRow.save();
+    return true;
+  } catch (e) { return false; }
+}
+
+async function setBudgetLimit(branch, category, limit) {
+  await doc.loadInfo();
+  const sheet = doc.sheetsByTitle['Budgets'];
+  if (!sheet) return false;
+  const rows = await sheet.getRows();
+  let row = category
+    ? rows.find(r => r.get('Branch') === branch && r.get('Category') === category)
+    : rows.find(r => r.get('Branch') === branch && (!r.get('Category') || r.get('Category').trim() === ''));
+  if (row) { row.set('Monthly Limit', limit.toString()); await row.save(); }
+  else await sheet.addRow({ 'Branch': branch, 'Category': category || '', 'Monthly Limit': limit.toString() });
+  return true;
+}
+
+// ==========================================
+// HISOBOT OY TANLASH
+// ==========================================
+async function getAvailableMonths() {
+  await doc.loadInfo();
+  const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+  const monthSet = new Set();
+  rows.forEach(r => {
+    const d = new Date(r.get('Timestamp'));
+    if (!isNaN(d)) monthSet.add(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'));
+  });
+  return Array.from(monthSet).sort().reverse();
+}
+
+function getMonthName(monthStr) {
+  const months = ['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
+  const [year, month] = monthStr.split('-');
+  return months[parseInt(month)-1] + ' ' + year;
+}
+
+async function generateReportByMonth(monthFilter) {
+  await doc.loadInfo();
+  const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+  const filtered = rows.filter(r => {
+    const d = new Date(r.get('Timestamp'));
+    if (isNaN(d)) return false;
+    if (monthFilter === 'all') return true;
+    return (d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0')) === monthFilter;
+  });
+  const paid = filtered.filter(r => r.get('Status') === 'PAID' || r.get('Status') === 'CHEQUE_SENT');
+  const pending = filtered.filter(r => r.get('Status') === 'PENDING');
+  const scheduled = filtered.filter(r => r.get('Status') === 'SCHEDULED');
+  const rejected = filtered.filter(r => r.get('Status') === 'REJECTED');
+  let branchTotals = {}, catTotals = {}, grandTotal = 0;
+  paid.forEach(r => {
+    const b = r.get('Branch') || 'Nomalum';
+    const val = parseSafeInt(r.get('Amount'));
+    branchTotals[b] = (branchTotals[b] || 0) + val; grandTotal += val;
+    const m = (r.get('Description') || '').match(/\[([^\]]+)\]/);
+    const cat = m ? m[1] : 'Boshqa';
+    catTotals[cat] = (catTotals[cat] || 0) + val;
+  });
+  const label = monthFilter === 'all' ? 'Barcha vaqt' : getMonthName(monthFilter);
+  let msg = `MOLIYA HISOBOTI - ${label}\n==========================\n`;
+  msg += `Tolangan: ${grandTotal.toLocaleString('en-US')} UZS\n`;
+  msg += `Kutilayotgan: ${pending.length} ta (${pending.reduce((s,r)=>s+parseSafeInt(r.get('Amount')),0).toLocaleString('en-US')} UZS)\n`;
+  msg += `Rejalashtirilgan: ${scheduled.length} ta\nRad etilgan: ${rejected.length} ta\n\nFiliallar boyicha:\n`;
+  branches.forEach(b => { if (branchTotals[b]) msg += `${b}: ${branchTotals[b].toLocaleString('en-US')} UZS\n`; });
+  const topCats = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if (topCats.length) { msg += '\nTop kategoriyalar:\n'; topCats.forEach(([c,a])=>{ msg += `${c}: ${a.toLocaleString('en-US')} UZS\n`; }); }
+  return msg;
+}
+
+// ==========================================
+// INLINE SELEKTORLAR
+// ==========================================
+function buildBranchButtons(selected) {
+  const ALL = ['Integro','Drujba','Amir Temur','Central','Marketing'];
+  const rows = [];
+  for (let i = 0; i < ALL.length; i += 2)
+    rows.push(ALL.slice(i,i+2).map(b => Markup.button.callback((selected.includes(b)?'OK ':'-- ')+b, 'selbranch_'+b)));
+  rows.push([Markup.button.callback('Hammasi','selbranch_all'), Markup.button.callback('Tayyor','selbranch_done')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+async function buildCategoryButtons(selected) {
+  const cats = await getActiveCategories();
+  const rows = [];
+  for (let i = 0; i < cats.length; i += 2)
+    rows.push(cats.slice(i,i+2).map(c => Markup.button.callback((selected.includes(c)?'OK ':'-- ')+c.substring(0,18), 'selcat_'+cats.indexOf(c))));
+  rows.push([Markup.button.callback('Hammasi','selcat_all'), Markup.button.callback('Tayyor','selcat_done')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+bot.action(/^selbranch_(.+)$/, async (ctx) => {
+  const uid = ctx.from.id;
+  const session = userSessions[uid];
+  if (!session || !['USER_ADD_BRANCHES','EDIT_BRANCH'].includes(session.step)) return ctx.answerCbQuery();
+  const val = ctx.match[1];
+  if (!session.selectedBranches) session.selectedBranches = [];
+  if (val === 'all') { session.selectedBranches = ['Integro','Drujba','Amir Temur','Central','Marketing']; session.allBranchesSelected = true; }
+  else if (val === 'done') {
+    if (!session.selectedBranches.length) return ctx.answerCbQuery('Kamida 1 ta tanlang!');
+    const brStr = session.allBranchesSelected ? 'hammasi' : session.selectedBranches.join(', ');
+    if (session.step === 'EDIT_BRANCH') {
+      const user = await getUserData(session.editUserId);
+      if (user) { user.set('Branches', brStr); await user.save(); }
+      await ctx.editMessageText('Filiallar yangilandi: ' + brStr);
+      delete userSessions[uid]; return ctx.answerCbQuery('Saqlandi!');
+    }
+    session.newUserBranches = brStr; session.step = 'USER_ADD_CATEGORIES';
+    session.selectedCategories = []; session.allCatsSelected = false;
+    await ctx.editMessageText('Filiallar: ' + brStr + '\n\nKategoriyalarni tanlang:', await buildCategoryButtons([]));
+    return ctx.answerCbQuery();
+  } else {
+    const idx = session.selectedBranches.indexOf(val);
+    if (idx > -1) session.selectedBranches.splice(idx,1); else session.selectedBranches.push(val);
+    session.allBranchesSelected = false;
+  }
+  await ctx.editMessageText('Filiallarni tanlang:\nTanlangan: '+(session.selectedBranches.length?session.selectedBranches.join(', '):'hech biri'), buildBranchButtons(session.selectedBranches)).catch(()=>{});
+  ctx.answerCbQuery();
+});
+
+bot.action(/^selcat_(.+)$/, async (ctx) => {
+  const uid = ctx.from.id;
+  const session = userSessions[uid];
+  if (!session || !['USER_ADD_CATEGORIES','EDIT_CAT'].includes(session.step)) return ctx.answerCbQuery();
+  const val = ctx.match[1];
+  const allCats = await getActiveCategories();
+  if (!session.selectedCategories) session.selectedCategories = [];
+  if (val === 'all') { session.selectedCategories = [...allCats]; session.allCatsSelected = true; }
+  else if (val === 'done') {
+    if (!session.selectedCategories.length) return ctx.answerCbQuery('Kamida 1 ta tanlang!');
+    const catStr = session.allCatsSelected ? 'hammasi' : session.selectedCategories.join(', ');
+    if (session.step === 'EDIT_CAT') {
+      const user = await getUserData(session.editUserId);
+      if (user) { user.set('Categories', catStr); await user.save(); }
+      await ctx.editMessageText('Kategoriyalar yangilandi: ' + catStr.substring(0,80));
+      delete userSessions[uid]; return ctx.answerCbQuery('Saqlandi!');
+    }
+    const ok = await saveUserData(session.newUserId, session.newUserName, session.newUserRole, session.newUserBranches, catStr);
+    await ctx.editMessageText(ok ? `Saqlandi!\nID: ${session.newUserId}\nIsm: ${session.newUserName}\nFiliallar: ${session.newUserBranches}` : 'Xatolik.');
+    delete userSessions[uid];
+    return ctx.reply('Admin paneli:', Markup.keyboard([['Hisobot (Report)','Kutilayotgan (Waiting)'],['Cashflow'],['Limitlar','Kategoriyalar'],['Foydalanuvchilar']]).resize());
+  } else {
+    const fullCat = allCats[parseInt(val)];
+    if (fullCat) { const ci = session.selectedCategories.indexOf(fullCat); if(ci>-1) session.selectedCategories.splice(ci,1); else session.selectedCategories.push(fullCat); }
+    session.allCatsSelected = false;
+  }
+  await ctx.editMessageText('Kategoriyalarni tanlang:\nTanlangan: '+(session.selectedCategories.length?session.selectedCategories.length+' ta':'hech biri'), await buildCategoryButtons(session.selectedCategories)).catch(()=>{});
+  ctx.answerCbQuery();
+});
+
+// ==========================================
+// ADMIN YANGI BUYRUQLAR
+// ==========================================
+bot.hears('Limitlar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  userSessions[ctx.from.id] = { step: 'LIMIT_BRANCH' };
+  ctx.reply('Qaysi filial uchun limit?', Markup.keyboard([...branches, 'Bekor qilish'], { columns: 2 }).resize());
+});
+
+bot.hears('Kategoriyalar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  const cats = await getActiveCategories();
+  ctx.reply(`Joriy kategoriyalar (${cats.length} ta):\n\n${cats.map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
+    Markup.keyboard([['Yangi kategoriya', "Kategoriyani ochirish"], ['Bekor qilish']]).resize());
+});
+
+bot.hears('Foydalanuvchilar', async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
+  ctx.reply('Foydalanuvchi boshqaruvi:', Markup.keyboard([['Foydalanuvchi qoshish', 'Foydalanuvchilar royxati'], ['Bekor qilish']]).resize());
+});
+
+bot.action(/^report_(.+)$/, async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return ctx.answerCbQuery();
+  try {
+    await ctx.editMessageText('Hisobot tayyorlanmoqda...');
+    const msg = await generateReportByMonth(ctx.match[1]);
+    await ctx.editMessageText(msg);
+  } catch(e) { ctx.editMessageText('Xatolik.'); }
+  ctx.answerCbQuery();
+});
+
+bot.action(/^edit_branch_(.+)$/, async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return ctx.answerCbQuery();
+  const tid = ctx.match[1]; const uid = ctx.from.id;
+  const user = await getUserData(tid);
+  const br = user ? user.get('Branches') || '' : '';
+  const sel = br === 'hammasi' ? ['Integro','Drujba','Amir Temur','Central','Marketing'] : br.split(',').map(b=>b.trim()).filter(Boolean);
+  userSessions[uid] = { step: 'EDIT_BRANCH', editUserId: tid, selectedBranches: sel, allBranchesSelected: br === 'hammasi' };
+  await ctx.editMessageReplyMarkup(null).catch(()=>{});
+  await ctx.reply('Filiallarni tanlang (hozirgi: '+(sel.length?sel.join(', '):'hech biri')+'):', buildBranchButtons(sel));
+  ctx.answerCbQuery();
+});
+
+bot.action(/^edit_cat_(.+)$/, async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return ctx.answerCbQuery();
+  const tid = ctx.match[1]; const uid = ctx.from.id;
+  const allCats = await getActiveCategories();
+  const user = await getUserData(tid);
+  const cats = user ? user.get('Categories') || '' : '';
+  const sel = cats === 'hammasi' ? [...allCats] : cats.split(',').map(c=>c.trim()).filter(Boolean);
+  userSessions[uid] = { step: 'EDIT_CAT', editUserId: tid, selectedCategories: sel, allCatsSelected: cats === 'hammasi' };
+  await ctx.editMessageReplyMarkup(null).catch(()=>{});
+  await ctx.reply('Kategoriyalarni tanlang ('+sel.length+' ta tanlangan):', await buildCategoryButtons(sel));
+  ctx.answerCbQuery();
+});
+
+bot.action(/^del_user_(.+)$/, async (ctx) => {
+  if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return ctx.answerCbQuery();
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Users'];
+    const rows = await sheet.getRows();
+    const row = rows.find(r => r.get('Telegram ID') === ctx.match[1]);
+    if (!row) return ctx.answerCbQuery('Topilmadi.');
+    const name = row.get('Name'); await row.delete();
+    await ctx.editMessageText(name + " o'chirildi.");
+  } catch(e) { ctx.answerCbQuery('Xatolik.'); }
+  ctx.answerCbQuery();
+});
 
 // ==========================================
 // BOOTSTRAP
