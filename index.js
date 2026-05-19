@@ -12,7 +12,7 @@ const SHEET_ID = process.env.SHEET_ID;
 const MANAGER_IDS = process.env.MANAGER_CHAT_IDS ? process.env.MANAGER_CHAT_IDS.split(',').map(id => id.trim()) : [];
 const ALLOWED_STAFF_IDS = process.env.ALLOWED_STAFF_IDS ? process.env.ALLOWED_STAFF_IDS.split(',').map(id => id.trim()) : [];
 const CEO_ID = process.env.CEO_CHAT_ID || "NO_CEO"; 
-const HEAD_CEO_ID = process.env.HEAD_CEO || "NO_HEAD_CEO"; // YANGI HEAD CEO ID
+const HEAD_CEO_ID = process.env.HEAD_CEO || "NO_HEAD_CEO";
 const MAINTENANCE_GROUP_ID = process.env.MAINTENANCE_GROUP_ID || null;
 
 const creds = JSON.parse(process.env.GCP_SERVICE_ACCOUNT);
@@ -31,7 +31,6 @@ const userSessions = {};
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const uid = ctx.from.id.toString();
-  // HEAD_CEO_ID ham tizimdan foydalanish huquqiga ega
   const isAllowed = ALLOWED_STAFF_IDS.includes(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID;
   if (!isAllowed) {
     if (ctx.chat && ctx.chat.type === 'private') {
@@ -263,7 +262,7 @@ bot.hears('Kutilayotgan (Waiting)', async (ctx) => {
 });
 
 // ==========================================
-// YENGI HEAD CEO FUNKSIYALARI
+// HEAD CEO FUNKSIYALARI
 // ==========================================
 bot.hears('🕵️ Procurement Nazorati', async (ctx) => {
   if (ctx.from.id.toString() !== HEAD_CEO_ID) return;
@@ -295,7 +294,7 @@ bot.hears('🕵️ Procurement Nazorati', async (ctx) => {
           msg += `✅ To'lovlarda kechikish yo'q.\n\n`;
       }
       
-      // 2. Ko'rib chiqilmagan so'rovlar (Siz aytgan mantiq)
+      // 2. Ko'rib chiqilmagan so'rovlar
       if (pending > 0) {
           msg += `🟠 *TASDIQLANMAGAN SO'ROVLAR:* ${pending} ta!\n_(Xodimlar pul so'ragan, lekin menejer hali botga kirib ko'rib chiqmagan. Bu ish jarayoni cho'zilayotganini bildiradi)._\n\n`;
       } else {
@@ -303,22 +302,6 @@ bot.hears('🕵️ Procurement Nazorati', async (ctx) => {
       }
       
       msg += `━━━━━━━━━━━━━━━\n🔵 *Kelgusida to'lanadigan:* ${upcoming} ta so'rov rejalashtirilgan.`;
-      
-      ctx.reply(msg, { parse_mode: 'Markdown' });
-  } catch(e) {
-      ctx.reply('Xatolik yuz berdi.');
-  }
-});
-      
-      let msg = `🕵️ *PROCUREMENT (Xaridlar) BO'LIMI NAZORATI*\n━━━━━━━━━━━━━━━\n\n`;
-      if (overdue > 0) {
-          msg += `🔴 *DIQQAT: Kechikayotgan to'lovlar bor!*\nSoni: ${overdue} ta so'rov qolib ketgan (to'lov muddati bugun yoki o'tib ketgan, lekin menejer to'lamagan).\n\n`;
-      } else {
-          msg += `✅ *Kechikishlar yo'q.* Menejer hamma to'lovlarni o'z vaqtida qilmoqda.\n\n`;
-      }
-      
-      msg += `🟡 *Ko'rib chiqilmagan (Yangi):* ${pending} ta so'rov kutilmoqda\n`;
-      msg += `🔵 *Kelgusida to'lanadigan:* ${upcoming} ta so'rov rejalashtirilgan\n`;
       
       ctx.reply(msg, { parse_mode: 'Markdown' });
   } catch(e) {
@@ -359,7 +342,9 @@ bot.hears('📊 Budjet Holati', async (ctx) => {
   }
 });
 
-
+// ==========================================
+// ADMIN NAZORAT BUYRUQLARI
+// ==========================================
 bot.hears('Limitlar', async (ctx) => {
   if (!MANAGER_IDS.includes(ctx.from.id.toString()) && ctx.from.id.toString() !== CEO_ID) return;
   userSessions[ctx.from.id] = { step: 'LIMIT_BRANCH' };
@@ -703,7 +688,6 @@ bot.action(/^(submit_final|cancel_final)$/, async (ctx) => {
 
       const managerMsg = `Yangi Sorov\nFilial: ${session.branch}\nKimdan: ${ctx.from.first_name}\nSumma: ${session.amount.toLocaleString('en-US')} UZS\nTolov: ${session.payType} (${session.payDetail})\nSabab: ${session.description}\nMuhimligi: ${session.priority}${budgetAudit}`;
 
-      // HEAD CEO ga xabar bormaydi, faqat managerlarga boradi
       for (let managerId of MANAGER_IDS) {
         await bot.telegram.sendMessage(managerId, managerMsg, Markup.inlineKeyboard(buttons)).catch(() => {});
         if (session.voiceFileId) {
@@ -750,7 +734,6 @@ bot.action(/^staffconfirm_(\d+)$/, async (ctx) => {
     await row.save();
     await ctx.editMessageCaption('PUL QABUL QILINDI VA YOPILDI.');
     
-    // Yana MANAGER larga yuboramiz (HEAD_CEO_ID kiritilmaydi)
     for (let managerId of MANAGER_IDS) {
       await bot.telegram.sendMessage(managerId, `Xodim ${parseSafeInt(row.get('Amount')).toLocaleString('en-US')} UZS miqdoridagi pulni olganini tasdiqladi. (ID: ${rowNum})`).catch(() => {});
     }
@@ -840,7 +823,6 @@ async function updateGroupMessageStatus(row, isApproved) {
     await bot.telegram.editMessageText(MAINTENANCE_GROUP_ID, parseInt(groupMsgId), null, newMsg).catch(() => {});
   }
 }
-
 
 // ==========================================
 // USERS JADVALI
