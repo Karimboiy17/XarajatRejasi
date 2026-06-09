@@ -1119,8 +1119,26 @@ bot.action(/^del_user_(.+)$/, async (ctx) => {
 });
 
 // ==========================================
+// XATOLIK LOGI
+// ==========================================
+const fs = require('fs');
+const logError = (msg, err) => {
+  const line = `[${new Date().toISOString()}] ${msg}: ${err?.message || err}\n`;
+  try { fs.appendFileSync('error.log', line); } catch {}
+  console.error(line);
+};
+
+// ==========================================
 // BOOTSTRAP
 // ==========================================
-bot.launch({ dropPendingUpdates: true }).then(() => console.log('IELTS Zone Finance Bot ishga tushdi!'));
+bot.launch({ dropPendingUpdates: false }).then(() => console.log('IELTS Zone Finance Bot ishga tushdi!'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+// Global xatolik ushlagich
+process.on('unhandledRejection', (reason, promise) => {
+  logError('unhandledRejection', reason);
+});
+process.on('uncaughtException', (err) => {
+  logError('uncaughtException', err);
+});
