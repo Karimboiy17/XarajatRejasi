@@ -25,13 +25,39 @@ const doc = new GoogleSpreadsheet(SHEET_ID, auth);
 
 const userSessions = {};
 
+// Cache for Users sheet (refreshed periodically)
+let cachedStaffIds = new Set(ALLOWED_STAFF_IDS);
+let staffCacheTime = 0;
+const STAFF_CACHE_TTL = 5 * 60 * 1000; // 5 min
+
+async function refreshStaffCache() {
+  try {
+    await doc.loadInfo();
+    const sheet = doc.sheetsByTitle['Users'];
+    if (!sheet) return;
+    const rows = await sheet.getRows();
+    cachedStaffIds = new Set(ALLOWED_STAFF_IDS);
+    for (const r of rows) {
+      const tid = r.get('Telegram ID');
+      if (tid) cachedStaffIds.add(tid.toString());
+    }
+    staffCacheTime = Date.now();
+  } catch(e) { /* keep old cache */ }
+}
+
 // ==========================================
 // SECURITY MIDDLEWARE
 // ==========================================
 bot.use(async (ctx, next) => {
   if (!ctx.from) return next();
   const uid = ctx.from.id.toString();
-  const isAllowed = ALLOWED_STAFF_IDS.includes(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID;
+  
+  // Refresh cache if stale
+  if (Date.now() - staffCacheTime > STAFF_CACHE_TTL) {
+    await refreshStaffCache().catch(() => {});
+  }
+  
+  const isAllowed = cachedStaffIds.has(uid) || MANAGER_IDS.includes(uid) || uid === CEO_ID || uid === HEAD_CEO_ID;
   if (!isAllowed) {
     if (ctx.chat && ctx.chat.type === 'private') {
       try { await ctx.reply("Kechirasiz, sizda ushbu botdan foydalanish huquqi yo'q.\nIltimos, ruxsat olish uchun rahbariyatga murojaat qiling."); } catch (e) {}
@@ -873,6 +899,8 @@ async function saveUserData(telegramId, name, role, branchStr, catStr) {
   } else {
     await sheet.addRow({ 'Telegram ID': telegramId.toString(), 'Name': name, 'Role': role, 'Branches': branchStr, 'Categories': catStr });
   }
+  // Bust cache — new/changed user should be immediately recognized
+  cachedStaffIds.add(telegramId.toString());
   return true;
 }
 
@@ -1113,6 +1141,7 @@ bot.action(/^del_user_(.+)$/, async (ctx) => {
     const row = rows.find(r => r.get('Telegram ID') === ctx.match[1]);
     if (!row) return ctx.answerCbQuery('Topilmadi.');
     const name = row.get('Name'); await row.delete();
+    cachedStaffIds.delete(ctx.match[1]); // Bust cache
     await ctx.editMessageText(name + " o'chirildi.");
   } catch(e) { ctx.answerCbQuery('Xatolik.'); }
   ctx.answerCbQuery();
