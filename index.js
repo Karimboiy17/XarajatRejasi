@@ -86,6 +86,16 @@ function getTodayStr() {
   return new Date(new Date().getTime() + (5 * 60 * 60 * 1000)).toISOString().split('T')[0];
 }
 
+function getDaysAgo(dateStr) {
+  if (!dateStr) return 0;
+  try {
+    const then = new Date(dateStr);
+    const now = new Date(new Date().getTime() + (5 * 60 * 60 * 1000));
+    const diff = now.getTime() - then.getTime();
+    return Math.floor(diff / (1000 * 60 * 60 * 24));
+  } catch(e) { return 0; }
+}
+
 function getScheduledDateStr(type, param) {
   const t = new Date(new Date().getTime() + (5 * 60 * 60 * 1000));
   if (type === 'D') {
@@ -221,7 +231,7 @@ bot.hears('📋 Kutilayotgan Xarajatlar', async (ctx) => {
     await doc.loadInfo();
     const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
     const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED' || r.get('Status') === 'PENDING');
-    if (waiting.length === 0) return ctx.reply("Kutilayotgan yoki tasdiqlanmagan so'rovlar yo'q.");
+    if (waiting.length === 0) return ctx.reply('✅ Kutilayotgan xarajatlar yo\'q.');
 
     let pendingList = waiting.filter(r => r.get('Status') === 'PENDING');
     let scheduledList = waiting.filter(r => r.get('Status') === 'SCHEDULED');
@@ -230,30 +240,49 @@ bot.hears('📋 Kutilayotgan Xarajatlar', async (ctx) => {
     pendingList.forEach(r => { pendingTotal += parseSafeInt(r.get('Amount')); });
     scheduledList.forEach(r => { scheduledTotal += parseSafeInt(r.get('Amount')); });
 
-    let msg = `📋 *KUTILAYOTGAN XARAJATLAR*\\n━━━━━━━━━━━━━━━\\n`;
-    msg += `Jami: *${(pendingTotal + scheduledTotal).toLocaleString('en-US')}* UZS | ${waiting.length} ta\\n\\n`;
+    const branchIcon = (b) => {
+      const map = { 'Integro': '🏫', 'Drujba': '🏢', 'Amir Temur': '🏛', 'Central': '🏬', 'Marketing': '📢' };
+      return map[b] || '📍';
+    };
+
+    let msg = `📋 *KUTILAYOTGAN XARAJATLAR*\n`;
+    msg += `━━━━━━━━━━━━━━━\n`;
+    msg += `💰 Jami: *${(pendingTotal + scheduledTotal).toLocaleString('en-US')}* UZS  |  ${waiting.length} ta\n\n`;
 
     if (pendingList.length > 0) {
-      msg += `🟡 *Tasdiqlanishi kutilmoqda:* ${pendingList.length} ta (${pendingTotal.toLocaleString('en-US')} UZS)\\n`;
-      pendingList.slice(0, 5).forEach(r => {
+      msg += `🟡 *Tasdiqlanishi kutilmoqda:* ${pendingList.length} ta (${pendingTotal.toLocaleString('en-US')} UZS)\n\n`;
+      pendingList.slice(0, 10).forEach((r, i) => {
         const ts = r.get('Timestamp') || '';
-        msg += `  • ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} | ${r.get('Staff Name')} | ${ts.substring(0,10)}\\n`;
+        const daysAgo = getDaysAgo(ts);
+        const age = daysAgo > 0 ? `⏳ ${daysAgo} kun` : '🆕 Bugun';
+        msg += `  ${i+1}. ${branchIcon(r.get('Branch'))} *${r.get('Branch')}*\n`;
+        msg += `     💵 ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} UZS\n`;
+        msg += `     👤 ${r.get('Staff Name')}\n`;
+        msg += `     📅 ${ts.substring(0,10)}  |  ${age}\n`;
+        msg += `     📝 ${(r.get('Description') || '').substring(0, 40)}\n\n`;
       });
-      if (pendingList.length > 5) msg += `  ... va yana ${pendingList.length - 5} ta\\n`;
+      if (pendingList.length > 10) msg += `  ... va yana ${pendingList.length - 10} ta\n\n`;
     }
 
     if (scheduledList.length > 0) {
-      msg += `\\n🗓 *Tasdiqlangan, to'lov kutilmoqda:* ${scheduledList.length} ta (${scheduledTotal.toLocaleString('en-US')} UZS)\\n`;
-      scheduledList.slice(0, 5).forEach(r => {
+      msg += `🗓 *Tasdiqlangan, to'lov kutilmoqda:* ${scheduledList.length} ta (${scheduledTotal.toLocaleString('en-US')} UZS)\n\n`;
+      scheduledList.slice(0, 10).forEach((r, i) => {
         const sd = r.get('Scheduled Date') || 'Nomalum';
-        msg += `  • ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} | ${sd} | ${r.get('Staff Name')}\\n`;
+        const isLate = sd !== 'Nomalum' && sd < getTodayStr();
+        const statusIcon = isLate ? '🔴 Kechikkan' : '🟢 O\'z vaqtida';
+        msg += `  ${i+1}. ${branchIcon(r.get('Branch'))} *${r.get('Branch')}*\n`;
+        msg += `     💵 ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} UZS\n`;
+        msg += `     👤 ${r.get('Staff Name')}\n`;
+        msg += `     📅 To'lov sanasi: ${sd}  |  ${statusIcon}\n`;
+        msg += `     📝 ${(r.get('Description') || '').substring(0, 40)}\n\n`;
       });
-      if (scheduledList.length > 5) msg += `  ... va yana ${scheduledList.length - 5} ta\\n`;
+      if (scheduledList.length > 10) msg += `  ... va yana ${scheduledList.length - 10} ta\n\n`;
     }
 
     await ctx.reply(msg, { parse_mode: 'Markdown' });
+
   } catch(e) {
-    console.error(e);
+    console.error('Kutilayotgan:', e);
     ctx.reply('Xatolik yuz berdi.');
   }
 });
@@ -526,7 +555,7 @@ bot.on('message', async (ctx) => {
 
   const uid2 = ctx.from.id.toString();
   const isAdminUser = MANAGER_IDS.includes(uid2) || uid2 === CEO_ID || uid2 === HEAD_CEO_ID;
-  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar', '📈 Moliya Hisoboti', '🕵️ Procurement Nazorati', '💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati', '📊 Procurement Nazorati'];
+  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar', '📈 Moliya Hisoboti', '🕵️ Procurement Nazorati', '💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati', '📊 Procurement Nazorati', '📋 Kutilayotgan Xarajatlar'];
   if (adminTexts.includes(text)) return;
 
   if (text === 'Bekor qilish' || text === '/start') {
