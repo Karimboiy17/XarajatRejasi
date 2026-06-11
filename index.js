@@ -202,9 +202,16 @@ bot.command('admin', (ctx) => {
     ]).resize());
   } else if (uid === CEO_ID) {
     return ctx.reply('CEO Monitoring Paneli:', Markup.keyboard([
+      ['📊 Procurement Nazorati'],
       ['Umumiy Hisobot', 'Cashflow Forecast']
     ]).resize());
   }
+});
+
+bot.hears('📊 Procurement Nazorati', async (ctx) => {
+  const uid = ctx.from.id.toString();
+  if (uid !== CEO_ID && uid !== HEAD_CEO_ID) return;
+  await sendProcurementReport(ctx, uid);
 });
 
 bot.hears(['Cashflow', 'Cashflow Forecast', '💸 Pul Oqimi (Cashflow)'], async (ctx) => {
@@ -457,7 +464,8 @@ bot.command(['start', 'new'], async (ctx) => {
       ['Foydalanuvchilar']
     ]).resize());
   } else if (uid === CEO_ID) {
-    return ctx.reply('IELTS Zone Finance Bot\nCEO paneli:', Markup.keyboard([
+    return ctx.reply('IELTS Zone Finance Bot\\nCEO paneli:', Markup.keyboard([
+      ['📊 Procurement Nazorati'],
       ['Umumiy Hisobot', 'Cashflow Forecast']
     ]).resize());
   }
@@ -474,7 +482,7 @@ bot.on('message', async (ctx) => {
 
   const uid2 = ctx.from.id.toString();
   const isAdminUser = MANAGER_IDS.includes(uid2) || uid2 === CEO_ID || uid2 === HEAD_CEO_ID;
-  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar', '📈 Moliya Hisoboti', '🕵️ Procurement Nazorati', '💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati'];
+  const adminTexts = ['Hisobot (Report)', 'Kutilayotgan (Waiting)', 'Cashflow', 'Cashflow Forecast', 'Umumiy Hisobot', 'Limitlar', 'Kategoriyalar', 'Foydalanuvchilar', '📈 Moliya Hisoboti', '🕵️ Procurement Nazorati', '💸 Pul Oqimi (Cashflow)', '📊 Budjet Holati', '📊 Procurement Nazorati'];
   if (adminTexts.includes(text)) return;
 
   if (text === 'Bekor qilish' || text === '/start') {
@@ -493,6 +501,7 @@ bot.on('message', async (ctx) => {
       ]).resize());
     } else if (uid2 === CEO_ID) {
       return ctx.reply('Bekor qilindi.', Markup.keyboard([
+        ['📊 Procurement Nazorati'],
         ['Umumiy Hisobot', 'Cashflow Forecast']
       ]).resize());
     }
@@ -1015,6 +1024,127 @@ async function generateReportByMonth(monthFilter) {
   const topCats = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,5);
   if (topCats.length) { msg += '\nTop kategoriyalar:\n'; topCats.forEach(([c,a])=>{ msg += `${c}: ${a.toLocaleString('en-US')} UZS\n`; }); }
   return msg;
+}
+
+// ==========================================
+// CEO PROCUREMENT HISOBOTI
+// ==========================================
+async function sendProcurementReport(ctx, uid) {
+  try {
+    await doc.loadInfo();
+    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+    const todayStr = getTodayStr();
+    const now = new Date(new Date().getTime() + (5 * 60 * 60 * 1000));
+
+    // 1. QANCHA QAYERGA XARAJAT QILINGAN (shu oy)
+    let branchSpent = {};
+    let totalPaid = 0;
+    let categorySpent = {};
+
+    rows.forEach(r => {
+      const status = r.get('Status');
+      if (status === 'PAID' || status === 'CHEQUE_SENT') {
+        const dateStr = r.get('Timestamp');
+        if (!dateStr) return;
+        const rowDate = new Date(dateStr);
+        if (rowDate.getMonth() === now.getMonth() && rowDate.getFullYear() === now.getFullYear()) {
+          const b = r.get('Branch') || 'Nomalum';
+          const amt = parseSafeInt(r.get('Amount'));
+          branchSpent[b] = (branchSpent[b] || 0) + amt;
+          totalPaid += amt;
+          const m = (r.get('Description') || '').match(/\[([^\]]+)\]/);
+          const cat = m ? m[1] : 'Boshqa';
+          categorySpent[cat] = (categorySpent[cat] || 0) + amt;
+        }
+      }
+    });
+
+    // 2. KECHIKKAN TO'LOVLAR (scheduled date < today, status != PAID)
+    let latePayments = [];
+    rows.forEach(r => {
+      const status = r.get('Status');
+      if (status === 'SCHEDULED') {
+        const sDate = r.get('Scheduled Date');
+        if (sDate && sDate < todayStr) {
+          latePayments.push(r);
+        }
+      }
+    });
+
+    // 3. KECH TASDIQLANGANLAR (PENDING > 3 kun)
+    let stuckPending = [];
+    const threeDaysAgo = new Date(now.getTime() - (3 * 24 * 60 * 60 * 1000));
+    rows.forEach(r => {
+      if (r.get('Status') === 'PENDING') {
+        const ts = r.get('Timestamp');
+        if (ts) {
+          const submitted = new Date(ts);
+          if (submitted < threeDaysAgo) {
+            stuckPending.push(r);
+          }
+        }
+      }
+    });
+
+    // Reportni chiqarish
+    let msg = `📊 *PROCUREMENT NAZORATI HISOBOTI*\n━━━━━━━━━━━━━━━\n\n`;
+
+    // Qancha qayerga
+    msg += `💰 *SHU OY XARAJATLARI:* ${totalPaid.toLocaleString('en-US')} UZS\n\n`;
+    if (Object.keys(branchSpent).length) {
+      msg += `📍 *Filiallar bo'yicha:*\n`;
+      const sortedBranches = Object.entries(branchSpent).sort((a,b) => b[1] - a[1]);
+      sortedBranches.forEach(([b, amt]) => {
+        msg += `  ${b}: ${amt.toLocaleString('en-US')} UZS\n`;
+      });
+    }
+    if (Object.keys(categorySpent).length) {
+      msg += `\n🗂 *Top kategoriyalar:*\n`;
+      const topCats = Object.entries(categorySpent).sort((a,b) => b[1] - a[1]).slice(0, 5);
+      topCats.forEach(([c, amt]) => {
+        msg += `  ${c}: ${amt.toLocaleString('en-US')} UZS\n`;
+      });
+    }
+
+    // Kechikkan to'lovlar
+    msg += `\n━━━━━━━━━━━━━━━\n`;
+    if (latePayments.length > 0) {
+      let lateTotal = 0;
+      latePayments.forEach(r => { lateTotal += parseSafeInt(r.get('Amount')); });
+      msg += `🔴 *KECHIKKAN TO'LOVLAR:* ${latePayments.length} ta (${lateTotal.toLocaleString('en-US')} UZS)\n`;
+      msg += `_(Menejer to'lov sanasini belgilagan lekin pul o'tkazilmagan)_\n\n`;
+      const showLate = latePayments.slice(0, 5);
+      showLate.forEach(r => {
+        msg += `  ❌ ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} UZS | ${r.get('Scheduled Date')}\n`;
+      });
+      if (latePayments.length > 5) msg += `  ... va yana ${latePayments.length - 5} ta\n`;
+    } else {
+      msg += `✅ To'lovlarda kechikish yo'q.\n`;
+    }
+
+    // Kech tasdiqlanganlar
+    msg += `\n━━━━━━━━━━━━━━━\n`;
+    if (stuckPending.length > 0) {
+      let stuckTotal = 0;
+      stuckPending.forEach(r => { stuckTotal += parseSafeInt(r.get('Amount')); });
+      msg += `🟠 *TASDIQLANMAY QOLGAN SO'ROVLAR:* ${stuckPending.length} ta (${stuckTotal.toLocaleString('en-US')} UZS)\n`;
+      msg += `_(3 kundan ortiq vaqt davomida ko'rib chiqilmagan)_\n\n`;
+      const showStuck = stuckPending.slice(0, 5);
+      showStuck.forEach(r => {
+        const ts = r.get('Timestamp') || '';
+        msg += `  ⚠️ ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} UZS | ${ts.substring(0,10)}\n`;
+      });
+      if (stuckPending.length > 5) msg += `  ... va yana ${stuckPending.length - 5} ta\n`;
+    } else {
+      msg += `✅ Tasdiqlanishi kutilayotgan eski so'rovlar yo'q.\n`;
+    }
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+
+  } catch(e) {
+    console.error('sendProcurementReport:', e);
+    ctx.reply('Xatolik yuz berdi.');
+  }
 }
 
 // ==========================================
