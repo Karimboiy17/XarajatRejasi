@@ -202,7 +202,7 @@ bot.command('admin', (ctx) => {
     ]).resize());
   } else if (uid === CEO_ID) {
     return ctx.reply('CEO Monitoring Paneli:', Markup.keyboard([
-      ['📊 Procurement Nazorati'],
+      ['📊 Procurement Nazorati', '📋 Kutilayotgan Xarajatlar'],
       ['Umumiy Hisobot', 'Cashflow Forecast']
     ]).resize());
   }
@@ -212,6 +212,50 @@ bot.hears('📊 Procurement Nazorati', async (ctx) => {
   const uid = ctx.from.id.toString();
   if (uid !== CEO_ID && uid !== HEAD_CEO_ID) return;
   await sendProcurementReport(ctx, uid);
+});
+
+bot.hears('📋 Kutilayotgan Xarajatlar', async (ctx) => {
+  const uid = ctx.from.id.toString();
+  if (uid !== CEO_ID && uid !== HEAD_CEO_ID) return;
+  try {
+    await doc.loadInfo();
+    const rows = await doc.sheetsByTitle['Pending_Expenses'].getRows();
+    const waiting = rows.filter(r => r.get('Status') === 'SCHEDULED' || r.get('Status') === 'PENDING');
+    if (waiting.length === 0) return ctx.reply("Kutilayotgan yoki tasdiqlanmagan so'rovlar yo'q.");
+
+    let pendingList = waiting.filter(r => r.get('Status') === 'PENDING');
+    let scheduledList = waiting.filter(r => r.get('Status') === 'SCHEDULED');
+
+    let pendingTotal = 0, scheduledTotal = 0;
+    pendingList.forEach(r => { pendingTotal += parseSafeInt(r.get('Amount')); });
+    scheduledList.forEach(r => { scheduledTotal += parseSafeInt(r.get('Amount')); });
+
+    let msg = `📋 *KUTILAYOTGAN XARAJATLAR*\\n━━━━━━━━━━━━━━━\\n`;
+    msg += `Jami: *${(pendingTotal + scheduledTotal).toLocaleString('en-US')}* UZS | ${waiting.length} ta\\n\\n`;
+
+    if (pendingList.length > 0) {
+      msg += `🟡 *Tasdiqlanishi kutilmoqda:* ${pendingList.length} ta (${pendingTotal.toLocaleString('en-US')} UZS)\\n`;
+      pendingList.slice(0, 5).forEach(r => {
+        const ts = r.get('Timestamp') || '';
+        msg += `  • ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} | ${r.get('Staff Name')} | ${ts.substring(0,10)}\\n`;
+      });
+      if (pendingList.length > 5) msg += `  ... va yana ${pendingList.length - 5} ta\\n`;
+    }
+
+    if (scheduledList.length > 0) {
+      msg += `\\n🗓 *Tasdiqlangan, to'lov kutilmoqda:* ${scheduledList.length} ta (${scheduledTotal.toLocaleString('en-US')} UZS)\\n`;
+      scheduledList.slice(0, 5).forEach(r => {
+        const sd = r.get('Scheduled Date') || 'Nomalum';
+        msg += `  • ${r.get('Branch')} | ${parseSafeInt(r.get('Amount')).toLocaleString('en-US')} | ${sd} | ${r.get('Staff Name')}\\n`;
+      });
+      if (scheduledList.length > 5) msg += `  ... va yana ${scheduledList.length - 5} ta\\n`;
+    }
+
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+  } catch(e) {
+    console.error(e);
+    ctx.reply('Xatolik yuz berdi.');
+  }
 });
 
 bot.hears(['Cashflow', 'Cashflow Forecast', '💸 Pul Oqimi (Cashflow)'], async (ctx) => {
@@ -465,8 +509,8 @@ bot.command(['start', 'new'], async (ctx) => {
     ]).resize());
   } else if (uid === CEO_ID) {
     return ctx.reply('IELTS Zone Finance Bot\\nCEO paneli:', Markup.keyboard([
-      ['📊 Procurement Nazorati'],
-      ['Umumiy Hisobot', 'Cashflow Forecast']
+      ['📊 Procurement Nazorati', '📋 Kutilayotgan Xarajatlar'],
+        ['Umumiy Hisobot', 'Cashflow Forecast']
     ]).resize());
   }
   
@@ -501,8 +545,8 @@ bot.on('message', async (ctx) => {
       ]).resize());
     } else if (uid2 === CEO_ID) {
       return ctx.reply('Bekor qilindi.', Markup.keyboard([
-        ['📊 Procurement Nazorati'],
-        ['Umumiy Hisobot', 'Cashflow Forecast']
+        ['📊 Procurement Nazorati', '📋 Kutilayotgan Xarajatlar'],
+          ['Umumiy Hisobot', 'Cashflow Forecast']
       ]).resize());
     }
     const userBranches = await getUserBranches(userId);
