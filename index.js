@@ -70,7 +70,7 @@ bot.use(async (ctx, next) => {
 // ==========================================
 // 2. CONSTANTS
 // ==========================================
-const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing'];
+const branches = ['📍 Integro', '📍 Drujba', '📍 Amir Temur', '📍 Central', '📍 Marketing', '📍 Online'];
 const categories = ['tugilgan kun uchun', 'printer rang', 'Printer tuzatish', 'remont-tuzatish', 'Hodimlar uchun dorilar', 'jihoz', 'Texnikalar', 'Transport', 'aromatizator', 'Internet', 'Telefon', 'of the month', 'Event', 'Reklama mahsulotlarini chiqarish', 'giftbox sovgalar', 'syomka xarajatlari', 'bozorlik xojalik', 'Suv va stakan', 'Konstovar', 'Plastik foizi', 'ofis xarajatlari', 'remont qurilish'];
 const priorities = ["O'ta muhim (Bugun)", "O'rtacha (Ertaga)", "Normal (Shu hafta)", "Shoshilinch emas (Shu oy)"];
 
@@ -241,7 +241,7 @@ bot.hears('📋 Kutilayotgan Xarajatlar', async (ctx) => {
     scheduledList.forEach(r => { scheduledTotal += parseSafeInt(r.get('Amount')); });
 
     const branchIcon = (b) => {
-      const map = { 'Integro': '🏫', 'Drujba': '🏢', 'Amir Temur': '🏛', 'Central': '🏬', 'Marketing': '📢' };
+      const map = { 'Integro': '🏫', 'Drujba': '🏢', 'Amir Temur': '🏛', 'Central': '🏬', 'Marketing': '📢', 'Online': '🌐' };
       return map[b] || '📍';
     };
 
@@ -588,7 +588,7 @@ bot.on('message', async (ctx) => {
   // LIMIT sessiyasi
   if (session && session.step === 'LIMIT_BRANCH') {
     const branch = text.replace('📍 ', '');
-    if (['Integro','Drujba','Amir Temur','Central','Marketing'].includes(branch)) {
+    if (['Integro','Drujba','Amir Temur','Central','Marketing','Online'].includes(branch)) {
       session.limitBranch = text; session.step = 'LIMIT_CATEGORY';
       const cats = await getActiveCategories();
       return ctx.reply(text + ' uchun qaysi limit?\n"Umumiy filial" = umumiy chegara',
@@ -1224,7 +1224,7 @@ async function sendProcurementReport(ctx, uid) {
 // INLINE SELEKTORLAR
 // ==========================================
 function buildBranchButtons(selected) {
-  const ALL = ['Integro','Drujba','Amir Temur','Central','Marketing'];
+  const ALL = ['Integro','Drujba','Amir Temur','Central','Marketing','Online'];
   const rows = [];
   for (let i = 0; i < ALL.length; i += 2)
     rows.push(ALL.slice(i,i+2).map(b => Markup.button.callback((selected.includes(b)?'OK ':'-- ')+b, 'selbranch_'+b)));
@@ -1247,7 +1247,7 @@ bot.action(/^selbranch_(.+)$/, async (ctx) => {
   if (!session || !['USER_ADD_BRANCHES','EDIT_BRANCH'].includes(session.step)) return ctx.answerCbQuery();
   const val = ctx.match[1];
   if (!session.selectedBranches) session.selectedBranches = [];
-  if (val === 'all') { session.selectedBranches = ['Integro','Drujba','Amir Temur','Central','Marketing']; session.allBranchesSelected = true; }
+  if (val === 'all') { session.selectedBranches = ['Integro','Drujba','Amir Temur','Central','Marketing','Online']; session.allBranchesSelected = true; }
   else if (val === 'done') {
     if (!session.selectedBranches.length) return ctx.answerCbQuery('Kamida 1 ta tanlang!');
     const brStr = session.allBranchesSelected ? 'hammasi' : session.selectedBranches.join(', ');
@@ -1315,7 +1315,7 @@ bot.action(/^edit_branch_(.+)$/, async (ctx) => {
   const tid = ctx.match[1]; const uid = ctx.from.id;
   const user = await getUserData(tid);
   const br = user ? user.get('Branches') || '' : '';
-  const sel = br === 'hammasi' ? ['Integro','Drujba','Amir Temur','Central','Marketing'] : br.split(',').map(b=>b.trim()).filter(Boolean);
+  const sel = br === 'hammasi' ? ['Integro','Drujba','Amir Temur','Central','Marketing','Online'] : br.split(',').map(b=>b.trim()).filter(Boolean);
   userSessions[uid] = { step: 'EDIT_BRANCH', editUserId: tid, selectedBranches: sel, allBranchesSelected: br === 'hammasi' };
   await ctx.editMessageReplyMarkup(null).catch(()=>{});
   await ctx.reply('Filiallarni tanlang (hozirgi: '+(sel.length?sel.join(', '):'hech biri')+'):', buildBranchButtons(sel));
