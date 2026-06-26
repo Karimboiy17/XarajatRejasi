@@ -995,7 +995,15 @@ async function getActiveCategories() {
     const sheet = doc.sheetsByTitle['Categories'];
     if (!sheet) return categories;
     const rows = await sheet.getRows();
-    const active = rows.filter(r => r.get('Active') !== 'FALSE' && r.get('Name')).map(r => r.get('Name'));
+    let active = rows.filter(r => r.get('Active') !== 'FALSE' && r.get('Name')).map(r => r.get('Name'));
+    // Auto-seed missing hardcoded categories
+    const missing = categories.filter(c => !active.includes(c));
+    if (missing.length > 0) {
+      for (const c of missing) {
+        await sheet.addRow({ 'Name': c, 'Active': 'TRUE', 'Created': new Date().toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' }) });
+      }
+      active = [...active, ...missing];
+    }
     return active.length > 0 ? active : categories;
   } catch (e) { return categories; }
 }
@@ -1004,8 +1012,20 @@ async function addCategory(name) {
   try {
     await doc.loadInfo();
     let catSheet = doc.sheetsByTitle['Categories'];
-    if (!catSheet) catSheet = await doc.addSheet({ title: 'Categories', headerValues: ['Name', 'Active', 'Created'] });
+    let isNewSheet = false;
+    if (!catSheet) {
+      catSheet = await doc.addSheet({ title: 'Categories', headerValues: ['Name', 'Active', 'Created'] });
+      isNewSheet = true;
+    }
     const catRows = await catSheet.getRows();
+    // If sheet was just created, seed with ALL hardcoded categories first
+    if (isNewSheet || catRows.length === 0) {
+      for (const c of categories) {
+        if (!catRows.find(r => r.get('Name') === c)) {
+          await catSheet.addRow({ 'Name': c, 'Active': 'TRUE', 'Created': new Date().toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' }) });
+        }
+      }
+    }
     if (catRows.find(r => r.get('Name') === name)) return false;
     await catSheet.addRow({ 'Name': name, 'Active': 'TRUE', 'Created': new Date().toLocaleString('uz-UZ', { timeZone: 'Asia/Tashkent' }) });
     const budgetSheet = doc.sheetsByTitle['Budgets'];
